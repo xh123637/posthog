@@ -119,6 +119,7 @@ class UsageSnapshotPayload:
 
     metric_runs: list[MetricRunCounts] | None = None
     adjusted_runs: list[AdjustedRun] | None = None
+    unchecked_queries: int = 0
     topics: list[TopicCluster] | None = None
     uncovered: list[UncoveredGroup] | None = None
 

@@ -584,6 +584,9 @@ class UsageSnapshotPayloadSerializer(serializers.Serializer):
     adjusted_runs = AdjustedRunSerializer(
         many=True, allow_null=True, help_text="Agent queries that re-derived a metric. Null until judged."
     )
+    unchecked_queries = serializers.IntegerField(
+        help_text="Candidate agent queries with no verdict, because the judge failed or the scan hit its call cap."
+    )
     topics = TopicClusterSerializer(many=True, allow_null=True, help_text="Agent session topics. Null until clustered.")
     uncovered = UncoveredGroupSerializer(
         many=True, allow_null=True, help_text="Recurring query shapes and their catalog outcome. Null until grouped."

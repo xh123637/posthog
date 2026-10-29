@@ -890,6 +890,8 @@ export interface UsageSnapshotPayloadApi {
      * @nullable
      */
     adjusted_runs: AdjustedRunApi[] | null
+    /** Candidate agent queries with no verdict, because the judge failed or the scan hit its call cap. */
+    unchecked_queries: number
     /**
      * Agent session topics. Null until clustered.
      * @nullable
