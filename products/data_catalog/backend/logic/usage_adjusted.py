@@ -229,7 +229,7 @@ def fetch_agent_queries(
             sql=sql,
             is_scout=source == SCOUT_SOURCE,
         )
-        for occurred_at, trace_id, distinct_id, intent, sql, source in _paged_rows(
+        for occurred_at, trace_id, distinct_id, intent, sql, source in paged_rows(
             _AGENT_SQL_QUERY, team, telemetry_team, window_start, window_end, "DataCatalogUsageAgentSQL"
         )
         if sql
@@ -240,7 +240,7 @@ def fetch_catalog_calls(
     *, team: Team, telemetry_team: Team, window_start: datetime, window_end: datetime
 ) -> dict[str, list[CatalogCall]]:
     calls: dict[str, list[CatalogCall]] = defaultdict(list)
-    for trace_id, occurred_at, tool, metric_name in _paged_rows(
+    for trace_id, occurred_at, tool, metric_name in paged_rows(
         _CATALOG_CALLS_QUERY, team, telemetry_team, window_start, window_end, "DataCatalogUsageCatalogCalls"
     ):
         calls[trace_id].append(
@@ -249,8 +249,14 @@ def fetch_catalog_calls(
     return calls
 
 
-def _paged_rows(
-    query: str, team: Team, telemetry_team: Team, window_start: datetime, window_end: datetime, query_type: str
+def paged_rows(
+    query: str,
+    team: Team,
+    telemetry_team: Team,
+    window_start: datetime,
+    window_end: datetime,
+    query_type: str,
+    placeholders: dict[str, ast.Expr] | None = None,
 ) -> Iterator[tuple]:
     page_start = window_start
     while page_start < window_end:
@@ -263,6 +269,7 @@ def _paged_rows(
                     "start": ast.Constant(value=page_start),
                     "end": ast.Constant(value=page_end),
                     "project": ast.Constant(value=str(team.id)),
+                    **(placeholders or {}),
                 },
                 query_type=query_type,
                 workload=Workload.OFFLINE,
