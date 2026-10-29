@@ -126,11 +126,62 @@ class UncoveredGroup:
     matched_metric_status: MetricStatus | None
     distinct_people: int
     active_days: int
-    runs: int
+    built: int
     scout_runs: int
     sample_sql: str
     draft_name: str | None
     draft_description: str | None
+    draft_definition: str | None = None
+    views: int = 0
+
+
+@dataclass(frozen=True)
+class ChartSource:
+    """A saved chart that ran a proposed metric's queries. People include anyone who only viewed it."""
+
+    insight_short_id: str
+    insight_name: str
+    dashboard_id: int | None
+    dashboard_name: str | None
+    people: int
+
+
+@dataclass(frozen=True)
+class SurfaceSource:
+    """A place in the web app that ran a proposed metric's queries outside a saved chart."""
+
+    product: str
+    people: int
+    runs: int
+
+
+@dataclass(frozen=True)
+class AgentSource:
+    people: int
+    sessions: int
+    runs: int
+
+
+@dataclass(frozen=True)
+class ProposedMetric:
+    """One proposal, with the measures it merges and where people use them.
+
+    People and days are distinct across the measures. Runs are the largest measure's runs, because
+    one query can compute several measures of a proposal.
+    """
+
+    name: str
+    description: str
+    definition: str
+    measures: int
+    people: int
+    active_days: int
+    built: int
+    charts: list[ChartSource]
+    other_charts: int
+    surfaces: list[SurfaceSource]
+    agents: AgentSource | None
+    views: int = 0
 
 
 @dataclass(frozen=True)
@@ -145,6 +196,7 @@ class UsageSnapshotPayload:
     topic_sessions: TopicSessionCounts | None = None
     table_sources: list[TableSource] | None = None
     uncovered: list[UncoveredGroup] | None = None
+    proposed_metrics: list[ProposedMetric] | None = None
 
 
 @dataclass(frozen=True)
