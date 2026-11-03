@@ -1,7 +1,6 @@
 from dataclasses import replace
 
 from products.tasks.backend.facade.profiles import (
-    AccessGate,
     DrivePolicy,
     GithubAccess,
     GithubResolution,
@@ -37,7 +36,6 @@ POSTHOG_AI = TaskProfile(
     read_without_channel=Read.CREATOR,
     api_visible=True,
     drive=DrivePolicy.OWNER,
-    access_gate=AccessGate.DESKTOP_CODE,
     max_live_per_user=None,
     warm=WarmPolicy(quota=WarmQuota.POSTHOG_AI, per_user_cap=2, per_org_cap=10, feature_flag=None),
     runtimes=("acp",),

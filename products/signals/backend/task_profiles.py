@@ -3,7 +3,6 @@ from dataclasses import replace
 from posthog.temporal.oauth import SCOUT_GRANTABLE_WRITE_SCOPES, resolve_scopes, scout_scope_posture
 
 from products.tasks.backend.facade.profiles import (
-    AccessGate,
     DrivePolicy,
     GithubAccess,
     GithubResolution,
@@ -59,7 +58,6 @@ INBOX = TaskProfile(
     read_without_channel=Read.TEAM,
     api_visible=True,
     drive=DrivePolicy.AUDIENCE,
-    access_gate=AccessGate.INBOX,
     max_live_per_user=None,
     warm=WarmPolicy(quota=WarmQuota.AI_CREDITS, per_user_cap=10, per_org_cap=100, feature_flag=None),
     runtimes=("acp",),
@@ -145,7 +143,6 @@ _SCOUT = replace(
     public=False,
     public_options=frozenset(),
     source_kind=None,
-    access_gate=AccessGate.DESKTOP_CODE,
     warm=None,
     runtimes=("acp", "pi"),
     network=NetworkPolicy(levels=(NetworkAccess.TRUSTED,)),
@@ -173,7 +170,6 @@ SCOUT_SUGGESTIONS = replace(
     key="signals.scout_suggestions",
     origin_product="scout_suggestions",
     source_kind=None,
-    access_gate=AccessGate.DESKTOP_CODE,
     read_without_channel=Read.CREATOR,
     drive=DrivePolicy.OWNER,
     warm=None,

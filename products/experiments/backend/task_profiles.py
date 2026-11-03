@@ -1,5 +1,4 @@
 from products.tasks.backend.facade.profiles import (
-    AccessGate,
     DrivePolicy,
     GithubAccess,
     GithubResolution,
@@ -22,7 +21,6 @@ CLEANUP = TaskProfile(
     read_without_channel=Read.TEAM,
     api_visible=True,
     drive=DrivePolicy.OWNER,
-    access_gate=AccessGate.DESKTOP_CODE,
     max_live_per_user=None,
     warm=None,
     runtimes=("acp",),

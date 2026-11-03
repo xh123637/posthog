@@ -1,5 +1,4 @@
 from products.tasks.backend.facade.profiles import (
-    AccessGate,
     DrivePolicy,
     GithubAccess,
     GithubResolution,
@@ -55,7 +54,6 @@ DASHBOARD_IMPORT = TaskProfile(
     read_without_channel=Read.CREATOR,
     api_visible=False,
     drive=DrivePolicy.OWNER,
-    access_gate=AccessGate.NONE,
     max_live_per_user=MAX_RUNNING_IMPORTS,
     warm=None,
     runtimes=("acp",),
