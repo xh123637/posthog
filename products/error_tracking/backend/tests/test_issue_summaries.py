@@ -4,24 +4,19 @@ from contextlib import nullcontext
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
-
 import time_machine
 from posthog.test.base import BaseTest
 from unittest.mock import MagicMock, patch
-
 from django.db import OperationalError
 from django.test import SimpleTestCase
-
 from parameterized import parameterized
 from prometheus_client import REGISTRY
 from redis.exceptions import RedisError
-
 from posthog.constants import AvailableFeature
-from posthog.models import PropertyDefinition, User
+from posthog.models import User
 from posthog.redis import TEST_clear_clients
 from posthog.temporal.common.errors import NonReportableApplicationError
 from posthog.token_bucket import BucketUnavailable, Budget, TEST_reset_scripts, consume
-
 from products.access_control.backend.facade.api import upsert_property_access_control
 from products.access_control.backend.facade.contracts import PropertyAccessLevel, UpsertPropertyAccessControlInput
 from products.error_tracking.backend.facade import summaries as summaries_facade
@@ -58,6 +53,7 @@ from products.error_tracking.backend.temporal.lifecycle.issue_created.types impo
     IssueCreatedSnapshot,
     IssueCreatedWorkflowInputs,
 )
+from products.event_definitions.backend.models import PropertyDefinition
 from products.ml_inference.backend.facade.contracts import ChoiceAnswer, DecisionResult
 
 SUMMARY_REPLY = {
