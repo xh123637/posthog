@@ -836,6 +836,23 @@ def test_pregate_is_final_only_where_the_full_review_agrees(
             "gate_failed",
             id="manifest-script-edit",
         ),
+        pytest.param(
+            _pregate_context(
+                [_api_file("posthog/migrations/0001_x.py")],
+                check_runs=[
+                    {
+                        "name": "Migration risk",
+                        "app": {"slug": "tests-posthog"},
+                        "status": "completed",
+                        "conclusion": "success",
+                        "output": {"summary": '<!-- stamphog:v1 ["posthog/migrations/0001_x.py"] -->'},
+                    }
+                ],
+                folder_policies_known=True,
+            ),
+            "",
+            id="deny-lifted-by-attestation",
+        ),
     ],
 )
 def test_attest_confirms_only_what_the_full_review_would_approve(
@@ -847,6 +864,7 @@ def test_attest_confirms_only_what_the_full_review_would_approve(
     outcome = review_local.attest(context)
 
     assert (outcome["attested"], outcome["reason"]) == (not expected_reason, expected_reason)
+    assert outcome["attestation_lifted"] is bool(context.get("check_runs"))
     if expected_reason == "dependency_manifest":
         assert outcome["manifests"] == ["frontend/package.json"]
     # The full review reads manifests from a checkout, which this test does not have.
