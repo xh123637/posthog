@@ -18,7 +18,7 @@ def _stub_activities(
     verdict: dict | None = None,
     rereview_fails: bool = False,
     attestation_reported_on_poll: int | None = None,
-    poll_fails: bool = False,
+    failed_poll_attempts: int = 0,
 ) -> list:
     def stub(name: str, result: dict):
         @activity.defn(name=name)
@@ -48,9 +48,9 @@ def _stub_activities(
     @activity.defn(name="poll_pending_attestations")
     async def poll(input: StamphogReviewInput) -> dict:
         calls.append("poll_pending_attestations")
-        if poll_fails:
-            raise RuntimeError("github unreachable")
         polls = calls.count("poll_pending_attestations")
+        if polls <= failed_poll_attempts:
+            raise RuntimeError("github unreachable")
         return {"done": attestation_reported_on_poll is not None and polls >= attestation_reported_on_poll}
 
     return [
@@ -145,17 +145,17 @@ async def test_wait_on_an_external_review_dispatches_the_rereview_in_its_own_act
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "waits_on_attestations, reported_on_poll, poll_fails, expected_polls",
+    "waits_on_attestations, reported_on_poll, failed_poll_attempts, expected_polls",
     [
-        pytest.param(False, None, False, 0, id="nothing-to-wait-for"),
-        pytest.param(True, 3, False, 3, id="stops-once-reported"),
-        pytest.param(True, None, False, STAMPHOG_ATTESTATION_MAX_POLLS, id="budget-runs-out"),
-        # The verdict is already posted, so a poll that keeps failing ends the run, never fails it.
-        pytest.param(True, None, True, 3, id="failing-poll-stops-after-its-retries"),
+        pytest.param(False, None, 0, 0, id="nothing-to-wait-for"),
+        pytest.param(True, 3, 0, 3, id="stops-once-reported"),
+        pytest.param(True, None, 0, STAMPHOG_ATTESTATION_MAX_POLLS, id="budget-runs-out"),
+        # The first poll fails all three of its attempts, and the next timer's poll sees the result.
+        pytest.param(True, 4, 3, 4, id="failed-poll-keeps-polling"),
     ],
 )
 async def test_wait_on_an_attestation_polls_until_it_reports(
-    waits_on_attestations: bool, reported_on_poll: int | None, poll_fails: bool, expected_polls: int
+    waits_on_attestations: bool, reported_on_poll: int | None, failed_poll_attempts: int, expected_polls: int
 ) -> None:
     # A WAIT on a CI result has no webhook to wake it, so the workflow polls from a durable timer.
     calls: list[str] = []
@@ -167,7 +167,12 @@ async def test_wait_on_an_attestation_polls_until_it_reports(
             task_queue=queue,
             workflows=[StamphogReviewWorkflow],
             activities=_stub_activities(
-                calls, 0, False, verdict=verdict, attestation_reported_on_poll=reported_on_poll, poll_fails=poll_fails
+                calls,
+                0,
+                False,
+                verdict=verdict,
+                attestation_reported_on_poll=reported_on_poll,
+                failed_poll_attempts=failed_poll_attempts,
             ),
             workflow_runner=UnsandboxedWorkflowRunner(),
         ):

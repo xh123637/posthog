@@ -249,9 +249,10 @@ class StamphogReviewWorkflow(PostHogWorkflow):
                     retry_policy=ACTIVITY_RETRY_POLICY,
                 )
             except ActivityError:
-                # The verdict is already posted, so a failed poll must not fail the run.
+                # The verdict is already posted, so a failed poll must not fail the run. A GitHub outage
+                # can outlast one poll's retries, so the next timer polls again within the budget.
                 workflow.logger.warning(f"stamphog attestation poll failed for run {input.review_run_id}")
-                return
+                continue
             if poll["done"]:
                 return
 
