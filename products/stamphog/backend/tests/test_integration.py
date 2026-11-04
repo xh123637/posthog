@@ -45,11 +45,7 @@ from products.stamphog.backend.logic.github_client import STICKY_COMMENT_MARKER,
 from products.stamphog.backend.logic.slack_digest import _THREAD_LEAD
 from products.stamphog.backend.models import DigestRun, PullRequest, PullRequestAudience, ReviewRun, StamphogRepoConfig
 from products.stamphog.backend.tasks.digest import send_daily_digests
-from products.stamphog.backend.tasks.tasks import (
-    process_inbox_pr_review,
-    request_rereview_on_check_completed,
-    rereview_after_external_review,
-)
+from products.stamphog.backend.tasks.tasks import process_inbox_pr_review, rereview_after_external_review
 from products.stamphog.backend.temporal import activities
 from products.stamphog.backend.temporal.activities import (
     MarkReviewFailedInput,
@@ -61,6 +57,7 @@ from products.stamphog.backend.temporal.activities import (
     fetch_review_context,
     list_in_flight_reviewer_bots,
     mark_review_failed,
+    poll_pending_attestations,
     post_verdict,
     refresh_review_evidence,
     rereview_after_external_review_finished,
@@ -1437,7 +1434,11 @@ def test_post_verdict_adopts_own_orphan_approval_instead_of_reposting(
     with override_settings(STAMPHOG_GITHUB_APP_SLUG=slug):
         result = _run_activity(post_verdict, StamphogReviewInput(review_run_id=str(run.id), team_id=team.id))
 
-    assert result == {"verdict": str(ReviewVerdict.APPROVED), "waited_on_external_review": False}
+    assert result == {
+        "verdict": str(ReviewVerdict.APPROVED),
+        "waited_on_external_review": False,
+        "waits_on_attestations": False,
+    }
     approvals = [w for w in recorder.github_writes if w["kind"] == "approve_review"]
     run.refresh_from_db()
     assert run.status == ReviewRunStatus.COMPLETED
@@ -1504,7 +1505,11 @@ def test_non_approve_terminal_sweeps_supersession_orphan(
     with override_settings(STAMPHOG_GITHUB_APP_SLUG="stamphog"):
         result = _run_activity(post_verdict, StamphogReviewInput(review_run_id=str(run.id), team_id=team.id))
 
-    assert result == {"verdict": str(ReviewVerdict.REFUSED), "waited_on_external_review": False}
+    assert result == {
+        "verdict": str(ReviewVerdict.REFUSED),
+        "waited_on_external_review": False,
+        "waits_on_attestations": False,
+    }
     run.refresh_from_db()
     assert run.verdict == ReviewVerdict.REFUSED
     # The orphan is always swept; a peer run's live persisted approval (9191) is never touched.
@@ -2067,11 +2072,9 @@ _WAITS_ON_MIGRATION_RISK = {
 
 @pytest.mark.django_db(databases=PRODUCT_DATABASES)
 @pytest.mark.parametrize(
-    "verdict, nudged_heads, live_head, enabled, earlier_wait, expected_new_runs, status, finished_check",
+    "verdict, nudged_heads, live_head, enabled, earlier_wait, expected_new_runs, status, prior_rereviews",
     [
-        pytest.param(
-            ReviewVerdict.WAIT, ["sha123b"], "sha123b", True, False, 1, None, None, id="wait-on-the-head-reruns"
-        ),
+        pytest.param(ReviewVerdict.WAIT, ["sha123b"], "sha123b", True, False, 1, None, 0, id="wait-on-the-head-reruns"),
         pytest.param(
             ReviewVerdict.WAIT,
             ["sha123b", "sha123b"],
@@ -2080,20 +2083,17 @@ _WAITS_ON_MIGRATION_RISK = {
             False,
             1,
             None,
-            None,
+            0,
             id="repeated-nudge-reruns-once",
         ),
         # The re-run waited again. The original WAIT it replaced must not count as covering the head.
         pytest.param(
-            ReviewVerdict.WAIT, ["sha123b"], "sha123b", True, True, 1, None, None, id="rerun-that-waited-again-reruns"
+            ReviewVerdict.WAIT, ["sha123b"], "sha123b", True, True, 1, None, 0, id="rerun-that-waited-again-reruns"
         ),
-        pytest.param(
-            ReviewVerdict.WAIT, ["sha123a"], "sha123b", True, False, 0, None, None, id="nudge-for-an-older-head"
-        ),
-        pytest.param(ReviewVerdict.WAIT, ["sha123b"], "sha123c", True, False, 0, None, None, id="head-moved-since"),
-        pytest.param(ReviewVerdict.APPROVED, ["sha123b"], "sha123b", True, False, 0, None, None, id="approved-verdict"),
-        pytest.param(ReviewVerdict.WAIT, ["sha123b"], "sha123b", False, False, 0, None, None, id="disconnected-repo"),
-        # A check run wakes the gates' WAIT only when the WAIT is on that check.
+        pytest.param(ReviewVerdict.WAIT, ["sha123a"], "sha123b", True, False, 0, None, 0, id="nudge-for-an-older-head"),
+        pytest.param(ReviewVerdict.WAIT, ["sha123b"], "sha123c", True, False, 0, None, 0, id="head-moved-since"),
+        pytest.param(ReviewVerdict.APPROVED, ["sha123b"], "sha123b", True, False, 0, None, 0, id="approved-verdict"),
+        pytest.param(ReviewVerdict.WAIT, ["sha123b"], "sha123b", False, False, 0, None, 0, id="disconnected-repo"),
         pytest.param(
             ReviewVerdict.WAIT,
             ["sha123b"],
@@ -2102,31 +2102,10 @@ _WAITS_ON_MIGRATION_RISK = {
             False,
             1,
             ReviewRunStatus.GATED,
-            "Migration risk",
-            id="gated-wait-woken-by-its-check",
-        ),
-        pytest.param(
-            ReviewVerdict.WAIT,
-            ["sha123b"],
-            "sha123b",
-            True,
-            False,
             0,
-            ReviewRunStatus.GATED,
-            "Lint",
-            id="gated-wait-other-check",
-        ),
-        pytest.param(
-            ReviewVerdict.WAIT,
-            ["sha123b"],
-            "sha123b",
-            True,
-            False,
-            1,
-            ReviewRunStatus.GATED,
-            None,
             id="gated-wait-external-review",
         ),
+        pytest.param(ReviewVerdict.WAIT, ["sha123b"], "sha123b", True, False, 0, None, 5, id="rereview-cap-reached"),
     ],
 )
 def test_finished_external_review_reruns_only_a_waiting_verdict(
@@ -2139,7 +2118,7 @@ def test_finished_external_review_reruns_only_a_waiting_verdict(
     earlier_wait: bool,
     expected_new_runs: int,
     status: ReviewRunStatus | None,
-    finished_check: str | None,
+    prior_rereviews: int,
 ) -> None:
     # A WAIT keeps a PR unapproved until something runs stamphog again. Any other verdict, head or
     # repo state must stay as it is, because a stray re-run can retract or replace a real verdict.
@@ -2172,27 +2151,23 @@ def test_finished_external_review_reruns_only_a_waiting_verdict(
             created_at=waiting.created_at - timedelta(minutes=10)
         )
         existing_ids.append(earlier.id)
+    for minutes in range(prior_rereviews):
+        prior = ReviewRun.objects.for_team(team.id).create(
+            team_id=team.id,
+            pull_request=pull_request,
+            head_sha="sha123b",
+            status=ReviewRunStatus.COMPLETED,
+            verdict=ReviewVerdict.WAIT,
+            output={"rereview_after_external_review": True},
+        )
+        ReviewRun.objects.for_team(team.id).filter(id=prior.id).update(
+            created_at=waiting.created_at - timedelta(minutes=minutes + 1)
+        )
+        existing_ids.append(prior.id)
 
     with patch("products.stamphog.backend.tasks.tasks.execute_stamphog_review_workflow") as start:
         for head_sha in nudged_heads:
-            if finished_check is None:
-                rereview_after_external_review(REPO, 123, head_sha)
-            else:
-                # A check created already completed can arrive as `created` alone.
-                check_run = {
-                    "name": finished_check,
-                    "status": "completed",
-                    "head_sha": head_sha,
-                    "pull_requests": [{"number": 123}],
-                }
-                request_rereview_on_check_completed(
-                    {
-                        "action": "created",
-                        "check_run": check_run,
-                        "installation": {"id": int(INSTALLATION_ID)},
-                        "repository": {"full_name": REPO},
-                    }
-                )
+            rereview_after_external_review(REPO, 123, head_sha)
 
     new_runs = ReviewRun.objects.for_team(team.id).filter(pull_request=pull_request).exclude(id__in=existing_ids)
     assert new_runs.count() == expected_new_runs
@@ -2337,23 +2312,31 @@ def test_wait_on_a_pending_external_review_reruns_once_that_review_finished(
 
 @pytest.mark.django_db(databases=PRODUCT_DATABASES)
 @pytest.mark.parametrize(
-    "check_status, completed_after_run_created, expected_dispatches",
+    "check_status, check_app, live_head, newer_run, expected_done, expected_dispatches",
     [
-        pytest.param("completed", timedelta(minutes=1), 1, id="check-finished-while-run-in-flight"),
-        pytest.param("in_progress", None, 0, id="check-still-running"),
-        pytest.param("completed", -timedelta(minutes=1), 0, id="check-finished-before-run-started"),
+        pytest.param("completed", "tests-posthog", "sha127a", False, True, 1, id="check-from-its-app-finished"),
+        pytest.param("in_progress", "tests-posthog", "sha127a", False, False, 0, id="check-still-running"),
+        # The engine reads only the pinned App's check, so a same-name check from another App
+        # would wake a review that waits again.
+        pytest.param("completed", "someone-else", "sha127a", False, False, 0, id="same-name-from-another-app"),
+        pytest.param("completed", "tests-posthog", "sha127b", False, True, 0, id="head-moved"),
+        pytest.param("completed", "tests-posthog", "sha127a", True, True, 0, id="newer-run-took-over"),
     ],
 )
-def test_wait_on_a_pending_attestation_reruns_once_its_check_finished(
+def test_attestation_poll_reruns_once_the_engine_would_see_the_result(
     team,
     stamphog_chain: StamphogChain,
     check_status: str,
-    completed_after_run_created: timedelta | None,
+    check_app: str,
+    live_head: str,
+    newer_run: bool,
+    expected_done: bool,
     expected_dispatches: int,
 ) -> None:
-    # The check run's webhook can arrive before this WAIT is saved and find nothing to wake.
     repo_config = _repo_config(team.id)
     head_sha = "sha127a"
+    live_pr = _pr_object(127, "devex-dev", live_head) | {"state": "open"}
+    stamphog_chain.recorder.register_pr(REPO, 127, live_pr, _pr_files())
     pull_request = PullRequest.objects.for_team(team.id).create(
         team_id=team.id, repo_config=repo_config, pr_number=127, author_login="devex-dev"
     )
@@ -2364,22 +2347,22 @@ def test_wait_on_a_pending_attestation_reruns_once_its_check_finished(
         status=ReviewRunStatus.GATED,
         verdict=ReviewVerdict.WAIT,
         gate_result=_WAITS_ON_MIGRATION_RISK,
+        output={"policy_files": {".stamphog/policy.yml": _MIGRATION_RISK_POLICY}},
     )
-    completed_at = None if completed_after_run_created is None else run.created_at + completed_after_run_created
+    if newer_run:
+        ReviewRun.objects.for_team(team.id).create(
+            team_id=team.id, pull_request=pull_request, head_sha=head_sha, status=ReviewRunStatus.QUEUED
+        )
     stamphog_chain.recorder.check_runs = [
-        {
-            "name": "Migration risk",
-            "status": check_status,
-            "completed_at": completed_at.isoformat() if completed_at else None,
-        }
+        {"name": "Migration risk", "status": check_status, "app": {"slug": check_app}},
     ]
 
     with patch.object(activities, "request_rereview_after_external_review") as rereview:
         result = _run_activity(
-            rereview_after_external_review_finished, StamphogReviewInput(review_run_id=str(run.id), team_id=team.id)
+            poll_pending_attestations, StamphogReviewInput(review_run_id=str(run.id), team_id=team.id)
         )
 
-    assert result == {"requested": bool(expected_dispatches)}
+    assert result == {"done": expected_done}
     assert rereview.call_args_list == [call(repository=REPO, pr_number=127, head_sha=head_sha)] * expected_dispatches
 
 

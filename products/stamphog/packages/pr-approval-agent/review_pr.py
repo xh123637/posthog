@@ -517,7 +517,8 @@ class Pipeline:
             # The server keeps an approval that rests on a CI result out of approval retention.
             "attestation_lifted": attestation_lifted,
             "pending_attestations": [
-                {"name": rule.name, "check": rule.wake_check_name, "lifts": list(rule.lifts)} for rule in pending_rules
+                {"name": rule.name, "check": rule.check or rule.job, "lifts": list(rule.lifts)}
+                for rule in pending_rules
             ],
             # Lift file by file, not by category, so a denied file outside an attestation's paths stays denied.
             "pending_attestations_clear_deny": clears_deny(pending_rules),

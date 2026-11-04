@@ -139,11 +139,6 @@ class Attestation:
     actions_workflow: str | None = None
     job: str | None = None
 
-    @property
-    def wake_check_name(self) -> str:
-        """The check run whose completion can change this attestation's result."""
-        return self.check or self.job or ""
-
 
 @dataclass(frozen=True, kw_only=True)
 class DenyException:
@@ -546,7 +541,10 @@ def _parse_attestations(raw: object, deny: dict[str, DenyCategory]) -> tuple[Att
         workflow = _optional_string(spec, "actions_workflow", context)
         job = _optional_string(spec, "job", context)
         _require((check is None) != (workflow is None), f"{context}: set exactly one of check or actions_workflow")
-        _require((app is None) == (check is None), f"{context}.app: a check entry needs an app, and only a check entry names one")
+        _require(
+            (app is None) == (check is None),
+            f"{context}.app: a check entry needs an app, and only a check entry names one",
+        )
         _require((job is None) == (workflow is None), f"{context}.job: an actions_workflow entry needs a job")
         _require(
             workflow is None or bool(_ACTIONS_WORKFLOW_RE.match(workflow)),

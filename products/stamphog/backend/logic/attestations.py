@@ -40,29 +40,46 @@ class ActionsAttestation:
     job: str
 
 
-def actions_attestations(policy_text: str | None) -> list[ActionsAttestation]:
-    """The Actions attestations a repository's default-branch policy declares.
+@frozen
+class CheckAttestation:
+    name: str
+    check: str
+    app: str
 
-    The engine validates the whole policy and fails the review on a malformed one, so an entry
-    this cannot read is skipped here rather than reported twice.
-    """
+
+def _policy_entries(policy_text: str | None) -> list[dict]:
+    # The engine validates the whole policy and fails the review on a malformed one, so an entry
+    # this cannot read is skipped here rather than reported twice.
     try:
         raw = yaml.safe_load(policy_text or "")
     except yaml.YAMLError:
         return []
     if not isinstance(raw, dict):
         return []
-    entries = [
+    return [
         entry
         for key in ("attestations", "extend_attestations")
         if isinstance(listed := raw.get(key), list)
         for entry in listed
+        if isinstance(entry, dict)
     ]
+
+
+def actions_attestations(policy_text: str | None) -> list[ActionsAttestation]:
+    """The Actions attestations a repository's default-branch policy declares."""
     return [
         ActionsAttestation(name=entry["name"], workflow=entry["actions_workflow"], job=entry["job"])
-        for entry in entries
-        if isinstance(entry, dict)
-        and all(isinstance(entry.get(key), str) for key in ("name", "actions_workflow", "job"))
+        for entry in _policy_entries(policy_text)
+        if all(isinstance(entry.get(key), str) for key in ("name", "actions_workflow", "job"))
+    ]
+
+
+def check_attestations(policy_text: str | None) -> list[CheckAttestation]:
+    """The check attestations a repository's default-branch policy declares."""
+    return [
+        CheckAttestation(name=entry["name"], check=entry["check"], app=entry["app"])
+        for entry in _policy_entries(policy_text)
+        if all(isinstance(entry.get(key), str) for key in ("name", "check", "app"))
     ]
 
 
@@ -128,8 +145,8 @@ def _result(
         if len(jobs) != 1:
             return {"completed": True, "conclusion": "missing_job"}
         job = jobs[0]
-        # The job's own check run wakes the review, and the rest of its workflow may still be
-        # running then, so the job's status decides rather than the run's.
+        # The rest of the workflow may still be running when the job finished, so the job's status
+        # decides rather than the run's.
         if job.get("status") != "completed":
             return {"completed": False}
         # A run that skipped the job (an edit that changed nothing it proves) leaves the older proof standing.
@@ -172,3 +189,37 @@ def actions_attestation_results(
             raise
         logger.warning("stamphog_actions_attestations_forbidden", repository=repo)
         return {}
+
+
+def attestations_reported(
+    client: StamphogGitHubClient,
+    repo: str,
+    pr: dict,
+    checks: list[CheckAttestation],
+    actions: list[ActionsAttestation],
+) -> bool:
+    """True when every given attestation has reported at the PR head, by the rules the engine applies.
+
+    A check entry has reported once a check run with its name from its App completed, as in the
+    engine's ``_check_result``. An Actions entry has reported once ``actions_attestation_results``
+    marks it completed or gives it no entry, which the engine reads as lifting nothing. A wake that
+    disagrees with the engine queues the same WAIT again, so keep both sides in step.
+    """
+    head_sha = (pr.get("head") or {}).get("sha") or ""
+    if checks:
+        check_runs = client.get_check_runs(repo, head_sha)
+        for check in checks:
+            if not any(
+                run.get("name") == check.check
+                and run.get("status") == "completed"
+                and (run.get("app") or {}).get("slug") == check.app
+                for run in check_runs
+            ):
+                return False
+    if actions:
+        results = actions_attestation_results(client, repo, pr, actions)
+        for job in actions:
+            result = results.get(job.name)
+            if isinstance(result, dict) and not result.get("completed"):
+                return False
+    return True

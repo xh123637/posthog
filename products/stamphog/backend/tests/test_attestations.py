@@ -7,8 +7,10 @@ from products.stamphog.backend.facade.contracts import StamphogGitHubError
 from products.stamphog.backend.logic.attestations import (
     ANNOTATION_TITLE_PREFIX,
     ActionsAttestation,
+    CheckAttestation,
     actions_attestation_results,
     actions_attestations,
+    attestations_reported,
 )
 
 _WORKFLOW = ".github/workflows/dependency-proof.yml"
@@ -49,8 +51,13 @@ class _FakeClient:
         jobs: dict[int, list[dict]],
         annotations: dict[int, list[dict]],
         base_changed_at: datetime | None = None,
+        check_runs: list[dict] | None = None,
     ) -> None:
         self.runs, self.jobs, self.annotations, self.base_changed_at = runs, jobs, annotations, base_changed_at
+        self.check_runs = check_runs or []
+
+    def get_check_runs(self, repo: str, head_sha: str) -> list[dict]:
+        return self.check_runs
 
     def get_last_base_change_at(self, repo: str, pr_number: int) -> datetime | None:
         return self.base_changed_at
@@ -216,3 +223,49 @@ extend_attestations:
 """
 
     assert actions_attestations(policy) == [_RULE]
+
+
+_CHECK = CheckAttestation(name="Migration risk", check="Migration risk", app="tests-posthog")
+_CHECK_DONE = {"name": "Migration risk", "status": "completed", "app": {"slug": "tests-posthog"}}
+
+
+@pytest.mark.parametrize(
+    "check_runs, runs, jobs, pr, expected",
+    [
+        pytest.param([_CHECK_DONE], [_run(1, "t1")], {1: [_job(11)]}, _PR, True, id="both-reported"),
+        # The engine reads only the pinned App's check, so waking on another App's would loop the WAIT.
+        pytest.param(
+            [{**_CHECK_DONE, "app": {"slug": "someone-else"}}],
+            [_run(1, "t1")],
+            {1: [_job(11)]},
+            _PR,
+            False,
+            id="check-from-another-app",
+        ),
+        pytest.param(
+            [_CHECK_DONE],
+            [_run(1, "t1", status="in_progress")],
+            {1: [_job(11, status="in_progress", conclusion=None)]},
+            _PR,
+            False,
+            id="job-running",
+        ),
+        pytest.param(
+            [_CHECK_DONE], [_run(1, "t1")], {1: [_job(11, conclusion="skipped")]}, _PR, True, id="every-run-skipped"
+        ),
+        pytest.param(
+            [_CHECK_DONE],
+            [],
+            {},
+            {**_PR, "head": {"sha": "head1", "repo": {"full_name": "fork/posthog"}}},
+            True,
+            id="fork-gets-no-actions-result",
+        ),
+    ],
+)
+def test_attestations_reported_agrees_with_the_engines_pending_rule(
+    check_runs: list[dict], runs: list[dict], jobs: dict[int, list[dict]], pr: dict, expected: bool
+) -> None:
+    client = _FakeClient(runs, jobs, {11: [_annotation()]}, check_runs=check_runs)
+
+    assert attestations_reported(client, "PostHog/posthog", pr, [_CHECK], [_RULE]) is expected  # type: ignore[arg-type]

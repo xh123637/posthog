@@ -70,7 +70,12 @@ from products.stamphog.backend.facade.review_evidence import (
     get_review_evidence_providers,
 )
 from products.stamphog.backend.logic.approvals import dismiss_stale_approvals_for_head
-from products.stamphog.backend.logic.attestations import actions_attestation_results, actions_attestations
+from products.stamphog.backend.logic.attestations import (
+    actions_attestation_results,
+    actions_attestations,
+    attestations_reported,
+    check_attestations,
+)
 from products.stamphog.backend.logic.audiences import resolve_audiences
 from products.stamphog.backend.logic.engine_pregate import (
     ENGINE_DIR,
@@ -106,7 +111,7 @@ from products.stamphog.backend.logic.reviewer import (
 from products.stamphog.backend.logic.scrubbing import neutralize_active_markdown, scrub_credentials
 from products.stamphog.backend.models import PullRequest, PullRequestAudience, ReviewRun, StamphogRepoConfig
 from products.stamphog.backend.tasks.tasks import (
-    pending_attestation_checks,
+    pending_attestation_names,
     queue_routing_after_verdict,
     request_rereview_after_external_review,
 )
@@ -1698,33 +1703,14 @@ def _waited_on_external_review(run: ReviewRun) -> bool:
 @activity.defn
 @asyncify
 def rereview_after_external_review_finished(input: StamphogReviewInput) -> dict:
-    """Queue a re-review when this WAIT waited on a review or a check that finished since the run read it.
+    """Queue a re-review when this WAIT waited on an external review that finished since the last poll.
 
-    The external reviewer asks stamphog to re-review when its review ends, and a finished check run
-    does the same through its webhook, but either request finds no WAIT while this run is still in
-    flight and does nothing. So the run looks once more after it saved its WAIT. A dispatch error
-    raises, so Temporal retries it, because a lost dispatch leaves the PR at WAIT until the next push.
+    The external reviewer asks stamphog to re-review when its review ends, but that request finds
+    no WAIT while this run is still in flight and does nothing. So the run asks the providers once
+    more after it saved its WAIT. A dispatch error raises, so Temporal retries it, because a lost
+    dispatch leaves the PR at WAIT until the next push.
     """
     run = _load_run(input)
-    pull_request = run.pull_request
-    repo_config = pull_request.repo_config
-    if checks := pending_attestation_checks(run):
-        check_runs = StamphogGitHubClient(repo_config.installation_id).get_check_runs(
-            repo_config.repository, run.head_sha
-        )
-        # A check that completed before this run started was already in its context, and the run
-        # still waited. Waking on it would queue the same WAIT again, without end.
-        if any(
-            check_run.get("name") in checks
-            and check_run.get("status") == "completed"
-            and (completed_at := parse_datetime(check_run.get("completed_at") or "")) is not None
-            and completed_at > run.created_at
-            for check_run in check_runs
-        ):
-            request_rereview_after_external_review(
-                repository=repo_config.repository, pr_number=pull_request.pr_number, head_sha=run.head_sha
-            )
-            return {"requested": True}
     if not _waited_on_external_review(run):
         return {"requested": False}
     # The run's own evidence is the earlier answer, so a provider error keeps the review pending. A
@@ -1737,10 +1723,53 @@ def rereview_after_external_review_finished(input: StamphogReviewInput) -> dict:
         raise RuntimeError(f"Run {run.id}: a review evidence provider failed; retrying the recheck")
     if pending:
         return {"requested": False}
+    pull_request = run.pull_request
+    request_rereview_after_external_review(
+        repository=pull_request.repo_config.repository, pr_number=pull_request.pr_number, head_sha=run.head_sha
+    )
+    return {"requested": True}
+
+
+@activity.defn
+@asyncify
+def poll_pending_attestations(input: StamphogReviewInput) -> dict:
+    """Whether the workflow can stop polling for the attestations that this run's WAIT waits on.
+
+    Polling stops when this run is no longer the PR's latest, when the PR closed or moved its head,
+    and when every pending attestation has reported. In the last case it queues the re-review. A
+    dispatch error raises, so Temporal retries it, because a lost dispatch leaves the PR at WAIT
+    until the next push. The rules come from the default-branch policy that the run read, never
+    from the sandbox's report, which only names the attestations that are pending.
+    """
+    run = _load_run(input)
+    names = pending_attestation_names(run)
+    pull_request = run.pull_request
+    latest_id = (
+        ReviewRun.objects.for_team(input.team_id)
+        .using(router.db_for_write(ReviewRun))
+        .filter(pull_request=pull_request)
+        .order_by("-created_at")
+        .values_list("id", flat=True)
+        .first()
+    )
+    if not names or latest_id != run.id:
+        return {"done": True}
+    policy_text = ((run.output or {}).get("policy_files") or {}).get(STAMPHOG_POLICY_ENTRYPOINT)
+    checks = [rule for rule in check_attestations(policy_text) if rule.name in names]
+    actions = [rule for rule in actions_attestations(policy_text) if rule.name in names]
+    if not (checks or actions):
+        return {"done": True}
+    repo_config = pull_request.repo_config
+    client = StamphogGitHubClient(repo_config.installation_id)
+    pr = client.get_pr(repo_config.repository, pull_request.pr_number)
+    if pr.get("state") != "open" or (pr.get("head") or {}).get("sha") != run.head_sha:
+        return {"done": True}
+    if not attestations_reported(client, repo_config.repository, pr, checks, actions):
+        return {"done": False}
     request_rereview_after_external_review(
         repository=repo_config.repository, pr_number=pull_request.pr_number, head_sha=run.head_sha
     )
-    return {"requested": True}
+    return {"done": True}
 
 
 @activity.defn
@@ -1997,10 +2026,10 @@ def post_verdict(input: StamphogReviewInput) -> dict:
 
     _capture_review_timings(run, str(parsed.verdict), int((time.monotonic() - post_started) * 1000))
     activity.logger.info(f"Posted verdict {parsed.verdict} for run {run.id}")
-    # The key keeps its name because recorded workflow histories carry it.
     return {
         "verdict": str(parsed.verdict),
-        "waited_on_external_review": _waited_on_external_review(run) or bool(pending_attestation_checks(run)),
+        "waited_on_external_review": _waited_on_external_review(run),
+        "waits_on_attestations": bool(pending_attestation_names(run)),
     }
 
 

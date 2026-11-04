@@ -7,7 +7,7 @@ from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
 from products.stamphog.backend.temporal.activities import StamphogReviewInput
-from products.stamphog.backend.temporal.constants import STAMPHOG_BOT_REVIEW_MAX_POLLS
+from products.stamphog.backend.temporal.constants import STAMPHOG_ATTESTATION_MAX_POLLS, STAMPHOG_BOT_REVIEW_MAX_POLLS
 from products.stamphog.backend.temporal.workflow import StamphogReviewWorkflow
 
 
@@ -17,6 +17,8 @@ def _stub_activities(
     reviews_completed: bool,
     verdict: dict | None = None,
     rereview_fails: bool = False,
+    attestation_reported_on_poll: int | None = None,
+    poll_fails: bool = False,
 ) -> list:
     def stub(name: str, result: dict):
         @activity.defn(name=name)
@@ -43,9 +45,18 @@ def _stub_activities(
             raise RuntimeError("broker unreachable")
         return {"requested": True}
 
+    @activity.defn(name="poll_pending_attestations")
+    async def poll(input: StamphogReviewInput) -> dict:
+        calls.append("poll_pending_attestations")
+        if poll_fails:
+            raise RuntimeError("github unreachable")
+        polls = calls.count("poll_pending_attestations")
+        return {"done": attestation_reported_on_poll is not None and polls >= attestation_reported_on_poll}
+
     return [
         list_in_flight,
         rereview,
+        poll,
         stub("dismiss_stale_approvals", {}),
         stub("signal_review_started", {}),
         # No sandbox id, so the workflow skips the checkout and the sandbox review.
@@ -130,3 +141,42 @@ async def test_wait_on_an_external_review_dispatches_the_rereview_in_its_own_act
 
     assert result == {"status": "completed", "verdict": "wait"}
     assert calls.count("rereview_after_external_review_finished") == expected_attempts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "waits_on_attestations, reported_on_poll, poll_fails, expected_polls",
+    [
+        pytest.param(False, None, False, 0, id="nothing-to-wait-for"),
+        pytest.param(True, 3, False, 3, id="stops-once-reported"),
+        pytest.param(True, None, False, STAMPHOG_ATTESTATION_MAX_POLLS, id="budget-runs-out"),
+        # The verdict is already posted, so a poll that keeps failing ends the run, never fails it.
+        pytest.param(True, None, True, 3, id="failing-poll-stops-after-its-retries"),
+    ],
+)
+async def test_wait_on_an_attestation_polls_until_it_reports(
+    waits_on_attestations: bool, reported_on_poll: int | None, poll_fails: bool, expected_polls: int
+) -> None:
+    # A WAIT on a CI result has no webhook to wake it, so the workflow polls from a durable timer.
+    calls: list[str] = []
+    verdict = {"verdict": "wait", "waited_on_external_review": False, "waits_on_attestations": waits_on_attestations}
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        queue = str(uuid.uuid4())
+        async with Worker(
+            env.client,
+            task_queue=queue,
+            workflows=[StamphogReviewWorkflow],
+            activities=_stub_activities(
+                calls, 0, False, verdict=verdict, attestation_reported_on_poll=reported_on_poll, poll_fails=poll_fails
+            ),
+            workflow_runner=UnsandboxedWorkflowRunner(),
+        ):
+            result = await env.client.execute_workflow(
+                StamphogReviewWorkflow.run,
+                StamphogReviewInput(review_run_id=str(uuid.uuid4()), team_id=1),
+                id=queue,
+                task_queue=queue,
+            )
+
+    assert result == {"status": "completed", "verdict": "wait"}
+    assert calls.count("poll_pending_attestations") == expected_polls
