@@ -108,6 +108,8 @@ RESEARCH = replace(
 
 RESEARCH_WITHOUT_REPORT = replace(RESEARCH, key="signals.research_without_report", source_kind=None)
 
+MONITORING_ASSESSMENT = replace(RESEARCH, key="signals.monitoring_assessment", mcp_scopes="signals_assessment")
+
 REPO_SELECTION = replace(
     _PIPELINE,
     key="signals.repo_selection",
@@ -201,6 +203,7 @@ PROFILES = (
     IMPLEMENTATION,
     RESEARCH,
     RESEARCH_WITHOUT_REPORT,
+    MONITORING_ASSESSMENT,
     REPO_SELECTION,
     REPO_SELECTION_WITHOUT_REPORT,
     CUSTOM_AGENT,

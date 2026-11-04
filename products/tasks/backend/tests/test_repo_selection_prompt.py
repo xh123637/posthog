@@ -268,7 +268,7 @@ def test_select_repository_asks_again_after_a_progress_note(
                 1,
                 1,
                 "which repo?",
-                origin_product=Task.OriginProduct.SLACK,
+                profile=SLACK_PROFILE,
                 priority=Priority.NORMAL,
                 github=github,
                 candidate_repos=["acme/a", "acme/b"],
