@@ -340,7 +340,7 @@ def _display_title(title: str | None) -> str:
     return description or title
 
 
-def _build_message_blocks(report: SignalReport, *, reviewer_mentions: list[str]) -> tuple[list[dict], str]:
+def _build_message_blocks(report: SignalReport, *, reviewer_labels: list[str]) -> tuple[list[dict], str]:
     title_line = _display_title(report.title)
     header_text = (
         title_line if len(title_line) <= _SLACK_HEADER_MAX_LEN else title_line[: _SLACK_HEADER_MAX_LEN - 3] + "..."
@@ -365,13 +365,12 @@ def _build_message_blocks(report: SignalReport, *, reviewer_mentions: list[str])
         _markdown_block(_prepare_markdown("\n\n".join(body_parts))),
     ]
 
-    # Mentions sit in mrkdwn, not plain_text, so the `<@U…>` token still pings the owner.
-    if reviewer_mentions:
-        owner_label = "Suggested owner" if len(reviewer_mentions) == 1 else "Suggested owners"
+    if reviewer_labels:
+        owner_label = "Suggested owner" if len(reviewer_labels) == 1 else "Suggested owners"
         blocks.append(
             {
                 "type": "context",
-                "elements": [{"type": "mrkdwn", "text": f"👤 {owner_label}: {' '.join(reviewer_mentions)}"}],
+                "elements": [{"type": "mrkdwn", "text": f"👤 {owner_label}: {' '.join(reviewer_labels)}"}],
             }
         )
 
@@ -388,7 +387,7 @@ def _build_message_blocks(report: SignalReport, *, reviewer_mentions: list[str])
 
 
 class _ChannelRoute:
-    """One Slack destination and the reviewers routed to it (mentioned only there).
+    """One Slack destination and the reviewers notified or shown there.
 
     The destination is a channel, or a member whose id Slack turns into a direct message.
     """
@@ -399,6 +398,7 @@ class _ChannelRoute:
         self.is_team_channel = is_team_channel
         self.is_direct_message = is_slack_member_target(channel)
         self.users: list[User] = []
+        self.owner_users: dict[int, User] = {}
 
 
 @frozen
@@ -409,7 +409,7 @@ class _Destination:
 
 
 class _RouteTable:
-    """The destinations one report is posted to, each collecting the reviewers it mentions.
+    """The destinations one report is posted to, with reviewers to notify and display.
 
     Keyed by (integration_id, channel_id) so a reviewer's own channel and the team default
     collapse into one post when they resolve to the same Slack channel.
@@ -418,7 +418,7 @@ class _RouteTable:
     def __init__(self) -> None:
         self._routes: dict[tuple[int, str], _ChannelRoute] = {}
 
-    def add(self, destination: _Destination, *, user: User | None = None) -> None:
+    def add(self, destination: _Destination, *, user: User | None = None, owner_users: Iterable[User] = ()) -> None:
         key = (destination.integration.id, _channel_id_from_target(destination.channel))
         route = self._routes.get(key)
         if route is None:
@@ -430,6 +430,9 @@ class _RouteTable:
             route.is_team_channel = True
         if user is not None:
             route.users.append(user)
+            route.owner_users[user.id] = user
+        for owner_user in owner_users:
+            route.owner_users[owner_user.id] = owner_user
 
     def routes(self) -> list[_ChannelRoute]:
         return list(self._routes.values())
@@ -469,13 +472,12 @@ def _build_reviewer_routes(
     team_integration: IntegrationRecord | None,
     team_channel: str | None,
 ) -> list[_ChannelRoute]:
-    """Route resolvable suggested reviewers to a destination, mentioning them there.
+    """Route resolvable suggested reviewers to a destination.
 
     Own target (filtered by the reviewer's min-priority) if set, else the team default. A reviewer
-    filtered out of their own target is not mentioned in the team channel — that was their choice.
-    Reviewers sharing a destination are grouped so each channel is posted to once, mentioning only
-    its own reviewers. The team-default channel (if configured) receives every report, with no
-    mentions when no reviewer is routed there.
+    filtered out of their own target is not pinged. Reviewers sharing a destination are grouped so
+    each channel is posted to once. The team-default channel receives every report and shows every
+    suggested owner. It pings only the reviewers routed there.
     """
     reviewer_user_ids = resolve_suggested_reviewer_user_ids(report)
     reviewer_users = {user.id: user for user in User.objects.filter(id__in=reviewer_user_ids)}
@@ -496,10 +498,11 @@ def _build_reviewer_routes(
             continue
         table.add(destination, user=user)
 
-    # The team channel gets every report. It mentions only the reviewers routed there, so a reviewer
-    # with their own target is not pinged twice.
     if team_integration is not None and team_channel:
-        table.add(_Destination(integration=team_integration, channel=team_channel, is_team_channel=True))
+        table.add(
+            _Destination(integration=team_integration, channel=team_channel, is_team_channel=True),
+            owner_users=(reviewer_users[user_id] for user_id in sorted(reviewer_users)),
+        )
 
     return table.routes()
 
@@ -531,9 +534,17 @@ def _deliver_route_notification(
             logger.warning("Skipping signals inbox-item Slack DM to an ineligible member", extra=log_context)
             _capture_notification_delivered(report, route, trigger=trigger, delivered=False)
             return False
-        # The only reviewer a direct message could mention is the person already reading it.
-        mentions = [] if route.is_direct_message else _resolve_reviewer_mentions(slack, route.users)
-        blocks, text = _build_message_blocks(report, reviewer_mentions=mentions)
+        if route.is_direct_message:
+            reviewer_labels: list[str] = []
+        else:
+            reviewer_labels = _resolve_reviewer_mentions(slack, route.users)
+            mentioned_user_ids = {user.id for user in route.users}
+            reviewer_labels.extend(
+                _escape_mrkdwn(_posthog_user_display_name(user))
+                for user_id, user in route.owner_users.items()
+                if user_id not in mentioned_user_ids
+            )
+        blocks, text = _build_message_blocks(report, reviewer_labels=reviewer_labels)
         # Added here rather than inside the block builder, which stays free of the integration so it
         # can be tested without one. Approval is read now, not assumed from generation time: a
         # reviewer can be added to a retained report after the org revoked it.
