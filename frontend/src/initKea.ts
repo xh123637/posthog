@@ -230,6 +230,17 @@ const CONTENT_EXPIRED_SELF_HANDLED_BY_LOGIC_PATH: Record<string, string> = {
     generateSummary: 'products.ai_observability.frontend.summary-view.summaryViewLogic',
 }
 
+/*
+Loads whose owning logic renders a 404 with code `github_repository_inaccessible` inline, with a link
+to the GitHub integration settings. The team's GitHub connection can't reach the PR's repository, so
+the 404 is a setup state, not a defect. The backend raises the code in products/signals/backend/views.py.
+*/
+const GITHUB_REPOSITORY_INACCESSIBLE_SELF_HANDLED_BY_LOGIC_PATH: Record<string, string> = {
+    loadReportDiff: 'scenes.inbox.logics.inboxReportDetailLogic',
+    loadPrChecks: 'scenes.inbox.logics.inboxReportDetailLogic',
+    loadPrComments: 'scenes.inbox.logics.inboxReportDetailLogic',
+}
+
 interface InitKeaProps {
     state?: Record<string, any>
     routerHistory?: any
@@ -387,11 +398,20 @@ export function initKea({
                     error?.status === 404 &&
                     error?.code === 'content_expired' &&
                     isOwnedByLogic(CONTENT_EXPIRED_SELF_HANDLED_BY_LOGIC_PATH, actionKey, logic.pathString)
+                const isSelfHandledGitHubRepositoryInaccessible =
+                    error?.status === 404 &&
+                    error?.code === 'github_repository_inaccessible' &&
+                    isOwnedByLogic(
+                        GITHUB_REPOSITORY_INACCESSIBLE_SELF_HANDLED_BY_LOGIC_PATH,
+                        actionKey,
+                        logic.pathString
+                    )
                 if (
                     shouldReportApiFailure(error) &&
                     !isSelfHandledNotFound &&
                     !isSelfHandledExistingMember &&
                     !isSelfHandledContentExpired &&
+                    !isSelfHandledGitHubRepositoryInaccessible &&
                     !isSelfHandledValidationError
                 ) {
                     posthog.captureException(error)
