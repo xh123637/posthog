@@ -178,6 +178,7 @@ Returning to PostHog Cloud restores the selected cloud region. Try the demo stay
 The sign-in screen uses OAuth in every build and has no personal API key option.
 Every build shows "Try the demo", including preview and store builds, so app reviewers can try the app without an account.
 In a release build it is the only way to start demo mode. Settings there can only leave demo mode, with "Exit demo".
+When a signed-out app opens a screen outside the tabs, such as a report link, `useAuthRedirect` passes that screen to the sign-in screen as `next`. A successful sign-in opens it instead of the start page.
 Development bundles (`__DEV__`) also have the Settings demo toggle and start in demo mode with `EXPO_PUBLIC_DEMO_MODE=1`.
 Every build restores a saved demo session when the app relaunches.
 Log in always opens the system browser, where the user's password, Google, GitHub, GitLab or SSO login happens.
@@ -205,7 +206,7 @@ The sign-in, session and settings events never carry the host, the error text or
 - `mobile_session_restored` with `method`, once per cold start that opens signed in.
 - `mobile_signed_out` with `reason` (`user`, or `expired` when the server ended the session) and `method`. It fires before the analytics identity resets.
 - `mobile_account_reload_failed` with `reason` (`forbidden`, `api_error`, `network` or `unknown`).
-- `mobile_project_picker_opened`, and `mobile_project_switched` with `from` (`nav_menu`, `settings` or `push`).
+- `mobile_project_picker_opened`, and `mobile_project_switched` with `from` (`nav_menu`, `settings`, `push` or `link`).
 - `mobile_settings_opened` with `from` (`nav_menu`).
 - `mobile_default_page_changed` with `page` and `previous_page` (`inbox`, `chats` or `views`), when Start page in Settings changes.
 - `mobile_default_page_defaulted` with `page` (`inbox` or `views`) and `org_ai_approved`, when the app saves the start page once for a person who never chose one.
