@@ -393,11 +393,11 @@ Unlike CODEOWNERS, the category only stops stamphog: any human approval still co
 
 An **attestation** (`attestations` in the policy) lifts named deny categories for the files a passing CI result lists.
 The shipped default declares none, because each one names a repository's own CI job; this repository's `.stamphog/policy.yml` declares the `Migration risk` check.
-An entry is read from the head commit's check runs, and must name the App that publishes it (`app`) and the in-repo files that produce it (`publisher_paths`).
-A PR that edits a publisher file ran its own copy of it, so the result lifts nothing and waits for nothing.
+A check entry is read from the head commit's check runs and must name the App that publishes it (`app`); a GitHub Actions entry is looked up by the hosted server, so a local `review_pr.py` run does not lift it.
+Every entry lists the in-repo files that produce it (`publisher_paths`). A PR that edits one ran its own copy of it, so the result lifts nothing and waits for nothing.
 See `attestations.py` for the model.
 
-If an attestation hasn't reported yet and the PR changes a file it judges, `review_local.py` returns `WAIT` rather than a verdict, and the review runs again on the next push.
+If an attestation hasn't reported yet and the PR changes a file it judges, `review_local.py` returns `WAIT` rather than a verdict, and the hosted server re-runs the review when the check completes.
 `review_pr.py` has no such caller and returns `REFUSED` instead.
 
 ### Ownership

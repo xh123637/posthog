@@ -6,6 +6,7 @@ from attestations import lifted_files, pending, resolve_results
 from policy import Attestation
 
 _MIGRATION = "posthog/migrations/1125_x.py"
+_LOCKFILE = "pnpm-lock.yaml"
 
 MIGRATION_RISK = Attestation(
     name="Migration risk",
@@ -16,7 +17,15 @@ MIGRATION_RISK = Attestation(
     publisher_paths=(r"(?:^|/)migration_analysis/",),
 )
 _PUBLISHER = "posthog/management/migration_analysis/classifier.py"
-RULES = (MIGRATION_RISK,)
+DEPENDENCY_PROOF = Attestation(
+    name="Dependency proof",
+    actions_workflow=".github/workflows/dependency-proof.yml",
+    job="prove",
+    lifts=("deps_toolchain",),
+    paths=(r"^pnpm-lock\.yaml$",),
+    publisher_paths=(r"^\.github/scripts/prove-dependencies\.py$",),
+)
+RULES = (MIGRATION_RISK, DEPENDENCY_PROOF)
 
 
 def _check(
@@ -41,8 +50,8 @@ def _check(
     }
 
 
-def _lifted(check_runs: list[dict], pr_files: list[str]) -> dict[str, frozenset[str]]:
-    return lifted_files(RULES, resolve_results(RULES, check_runs, pr_files), pr_files)
+def _lifted(check_runs: list[dict], pr_files: list[str], actions: dict | None = None) -> dict[str, frozenset[str]]:
+    return lifted_files(RULES, resolve_results(RULES, check_runs, actions or {}, pr_files), pr_files)
 
 
 @pytest.mark.parametrize(
@@ -92,6 +101,37 @@ def test_check_attestation_lifts_listed_files(
     assert _lifted(check_runs, pr_files) == expected
 
 
+_PASSED_PROOF = {"Dependency proof": {"completed": True, "conclusion": "success", "files": [_LOCKFILE]}}
+
+
+@pytest.mark.parametrize(
+    "actions, pr_files, expected_lifted, expected_pending",
+    [
+        pytest.param(_PASSED_PROOF, [_LOCKFILE], {"deps_toolchain": frozenset({_LOCKFILE})}, [], id="passed"),
+        # The run executed the PR's own copy of the prover.
+        pytest.param(_PASSED_PROOF, [_LOCKFILE, DEPENDENCY_PROOF.actions_workflow], {}, [], id="pr-edits-the-prover"),
+        # The prover workflow may run that script.
+        pytest.param(_PASSED_PROOF, [_LOCKFILE, "bin/prove-dependencies"], {}, [], id="pr-edits-a-file-outside-paths"),
+        pytest.param(
+            {"Dependency proof": {"completed": True, "conclusion": "failure", "files": [_LOCKFILE]}},
+            [_LOCKFILE],
+            {},
+            [],
+            id="failed",
+        ),
+        pytest.param({"Dependency proof": {"completed": False}}, [_LOCKFILE], {}, ["Dependency proof"], id="running"),
+        pytest.param({}, [_LOCKFILE], {}, [], id="not-looked-up"),
+    ],
+)
+def test_actions_attestation_reads_the_servers_result(
+    actions: dict, pr_files: list[str], expected_lifted: dict[str, frozenset[str]], expected_pending: list[str]
+) -> None:
+    results = resolve_results(RULES, [_check(files=[])], actions, pr_files)
+
+    assert lifted_files(RULES, results, pr_files) == expected_lifted
+    assert [rule.name for rule in pending(RULES, results, pr_files)] == expected_pending
+
+
 @pytest.mark.parametrize(
     "check_runs, pr_files, expected",
     [
@@ -105,6 +145,6 @@ def test_check_attestation_lifts_listed_files(
 def test_pending_only_for_files_the_attestation_judges(
     check_runs: list[dict], pr_files: list[str], expected: list[str]
 ) -> None:
-    results = resolve_results(RULES, check_runs, pr_files)
+    results = resolve_results(RULES, check_runs, {}, pr_files)
 
     assert [rule.name for rule in pending(RULES, results, pr_files)] == expected

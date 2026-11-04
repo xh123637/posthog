@@ -171,6 +171,21 @@ query($id: ID!, $cursor: String) {
 # Blame of one file at one commit, for the author-familiarity facts. One file per request, because
 # GitHub aborts a GraphQL request after about ten seconds, and the blame of one large generated file
 # can use all of that. Batched files would all fail with it.
+_LAST_BASE_CHANGE_QUERY = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      timelineItems(last: 1, itemTypes: [BASE_REF_CHANGED_EVENT, AUTOMATIC_BASE_CHANGE_SUCCEEDED_EVENT]) {
+        nodes {
+          ... on BaseRefChangedEvent { createdAt }
+          ... on AutomaticBaseChangeSucceededEvent { createdAt }
+        }
+      }
+    }
+  }
+}
+"""
+
 _BLAME_QUERY = """
 query($owner: String!, $name: String!, $oid: GitObjectID!, $path: String!) {
   repository(owner: $owner, name: $name) {
@@ -713,26 +728,9 @@ class StamphogGitHubClient:
         Returns the raw GitHub file objects (``filename``, ``status``, ``additions``, ``deletions``,
         ``patch``, ...). Stops at ``_MAX_PAGES`` so an enormous PR can't page unbounded.
         """
-        files: list[dict] = []
-        for page in range(1, _MAX_PAGES + 1):
-            response = self._request(
-                "GET",
-                f"/repos/{repo}/pulls/{number}/files",
-                endpoint="/repos/{owner}/{repo}/pulls/{pull_number}/files",
-                params={"per_page": _PER_PAGE, "page": page},
-            )
-            if response.status_code != 200:
-                raise StamphogGitHubError(
-                    f"Failed to fetch PR files {repo}#{number}: {response.text[:300]}",
-                    status_code=response.status_code,
-                )
-            page_files = self._json(response, f"/repos/{repo}/pulls/{number}/files")
-            if not isinstance(page_files, list):
-                raise StamphogGitHubError(f"Unexpected PR files payload for {repo}#{number}")
-            files.extend(file for file in page_files if isinstance(file, dict))
-            if len(page_files) < _PER_PAGE:
-                break
-        return files
+        return self._paged_list(
+            f"/repos/{repo}/pulls/{number}/files", endpoint="/repos/{owner}/{repo}/pulls/{pull_number}/files", key=None
+        )
 
     def get_pr_commit_messages(self, repo: str, number: int, head_sha: str) -> list[str] | None:
         """The messages of the PR's commits, or None when the list does not end at ``head_sha``.
@@ -1097,35 +1095,61 @@ class StamphogGitHubClient:
             "refusing to review a truncated thread"
         )
 
-    def get_check_runs(self, repo: str, head_sha: str) -> list[dict]:
-        """Fetch the check runs for a commit, paginating through GitHub's endpoint.
-
-        Returns the raw GitHub check-run objects (``name``, ``conclusion``, ``status``, ...). The engine's
-        migration gate uses them: a passing ``Migration risk`` check lets a migration-only PR bypass the
-        deny-list. Without them the hosted path can't see that success and over-refuses safe migration PRs.
-        Bounded by ``_MAX_PAGES``.
-        """
-        check_runs: list[dict] = []
+    def _paged_list(
+        self, path: str, *, endpoint: str, key: str | None, params: dict[str, str] | None = None
+    ) -> list[dict]:
+        """Every object of a paginated list endpoint, bounded by ``_MAX_PAGES``. ``key`` names the list in a wrapper."""
+        items: list[dict] = []
         for page in range(1, _MAX_PAGES + 1):
             response = self._request(
-                "GET",
-                f"/repos/{repo}/commits/{head_sha}/check-runs",
-                endpoint="/repos/{owner}/{repo}/commits/{ref}/check-runs",
-                params={"per_page": _PER_PAGE, "page": page},
+                "GET", path, endpoint=endpoint, params={**(params or {}), "per_page": _PER_PAGE, "page": page}
             )
             if response.status_code != 200:
                 raise StamphogGitHubError(
-                    f"Failed to fetch check runs {repo}@{head_sha}: {response.text[:300]}",
-                    status_code=response.status_code,
+                    f"Failed to fetch {path}: {response.text[:300]}", status_code=response.status_code
                 )
-            data = self._json(response, f"/repos/{repo}/commits/{head_sha}/check-runs")
-            page_runs = data.get("check_runs") if isinstance(data, dict) else None
-            if not isinstance(page_runs, list):
-                raise StamphogGitHubError(f"Unexpected check runs payload for {repo}@{head_sha}")
-            check_runs.extend(run for run in page_runs if isinstance(run, dict))
-            if len(page_runs) < _PER_PAGE:
+            data = self._json(response, path)
+            page_items = data.get(key) if key is not None and isinstance(data, dict) else data
+            if not isinstance(page_items, list):
+                raise StamphogGitHubError(f"Unexpected payload for {path}")
+            items.extend(item for item in page_items if isinstance(item, dict))
+            if len(page_items) < _PER_PAGE:
                 break
-        return check_runs
+        return items
+
+    def get_check_runs(self, repo: str, head_sha: str) -> list[dict]:
+        """The raw check runs of a commit. The engine reads check attestations from them."""
+        return self._paged_list(
+            f"/repos/{repo}/commits/{head_sha}/check-runs",
+            endpoint="/repos/{owner}/{repo}/commits/{ref}/check-runs",
+            key="check_runs",
+        )
+
+    def get_pull_request_workflow_runs(self, repo: str, head_sha: str) -> list[dict]:
+        """The GitHub Actions runs that a `pull_request` event started for a commit. Needs Actions read."""
+        return self._paged_list(
+            f"/repos/{repo}/actions/runs",
+            endpoint="/repos/{owner}/{repo}/actions/runs",
+            key="workflow_runs",
+            params={"head_sha": head_sha, "event": "pull_request"},
+        )
+
+    def get_workflow_run_jobs(self, repo: str, run_id: int) -> list[dict]:
+        """The jobs of a run's latest attempt."""
+        return self._paged_list(
+            f"/repos/{repo}/actions/runs/{run_id}/jobs",
+            endpoint="/repos/{owner}/{repo}/actions/runs/{run_id}/jobs",
+            key="jobs",
+            params={"filter": "latest"},
+        )
+
+    def get_check_run_annotations(self, repo: str, check_run_id: int) -> list[dict]:
+        """A check run's annotations. An Actions job's id is its check run's id."""
+        return self._paged_list(
+            f"/repos/{repo}/check-runs/{check_run_id}/annotations",
+            endpoint="/repos/{owner}/{repo}/check-runs/{check_run_id}/annotations",
+            key=None,
+        )
 
     def get_author_merged_pr_numbers(self, repo: str, author: str, *, max_results: int = 1000) -> list[int]:
         """Return the author's merged-PR numbers in this repo (best-effort).
@@ -1195,12 +1219,37 @@ class StamphogGitHubClient:
             raise StamphogGitHubError(f"No merge base in the compare payload for {base_sha}...{head_sha}")
         return sha
 
+    def get_last_base_change_at(self, repo: str, pr_number: int) -> datetime | None:
+        """When the PR's base branch last changed, by hand or after a parent branch merged, or None if it never did."""
+        repository = self._repository_graphql(
+            repo, _LAST_BASE_CHANGE_QUERY, {"number": pr_number}, timeout=15, priority=Priority.CRITICAL
+        )
+        nodes = (((repository.get("pullRequest") or {}).get("timelineItems")) or {}).get("nodes")
+        if not isinstance(nodes, list):
+            raise StamphogGitHubError(f"No timeline for a PR in {repo}")
+        if not nodes:
+            return None
+        try:
+            return datetime.fromisoformat(str((nodes[-1] or {}).get("createdAt")))
+        except ValueError as e:
+            raise StamphogGitHubError(f"Unreadable base change time for a PR in {repo}") from e
+
     def _commit_graphql(self, repo: str, query: str, variables: dict[str, Any], *, timeout: int) -> dict:
         """Run a query against one commit object of ``repo`` and return that commit's fields.
 
         Raises on any HTTP, GraphQL, or shape failure. These queries feed an advisory signal, so
         they run on the sheddable BATCH lane.
         """
+        repository = self._repository_graphql(repo, query, variables, timeout=timeout, priority=Priority.BATCH)
+        commit = repository.get("object")
+        if not isinstance(commit, dict):
+            raise StamphogGitHubError(f"Commit not found in {repo}")
+        return commit
+
+    def _repository_graphql(
+        self, repo: str, query: str, variables: dict[str, Any], *, timeout: int, priority: Priority
+    ) -> dict:
+        """Run a query against ``repo`` and return its ``repository`` object. Raises on any HTTP, GraphQL, or shape failure."""
         owner, name = repo.split("/", 1)
         response = self._request(
             "POST",
@@ -1208,7 +1257,7 @@ class StamphogGitHubClient:
             endpoint="/graphql",
             json_body={"query": query, "variables": {"owner": owner, "name": name, **variables}},
             timeout=timeout,
-            priority=Priority.BATCH,
+            priority=priority,
         )
         if response.status_code != 200:
             raise StamphogGitHubError(f"GraphQL request failed on {repo}", status_code=response.status_code)
@@ -1220,10 +1269,10 @@ class StamphogGitHubClient:
             raise GitHubRateLimitError(f"GitHub GraphQL rate limit exceeded on {repo}")
         if not isinstance(data, dict) or errors:
             raise StamphogGitHubError(f"GraphQL errors on {repo}")
-        commit = ((data.get("data") or {}).get("repository") or {}).get("object")
-        if not isinstance(commit, dict):
-            raise StamphogGitHubError(f"Commit not found in {repo}")
-        return commit
+        repository = (data.get("data") or {}).get("repository")
+        if not isinstance(repository, dict):
+            raise StamphogGitHubError(f"Repository not found: {repo}")
+        return repository
 
     def get_blame_ranges(self, repo: str, oid: str, path: str, *, timeout: int) -> list[dict]:
         """The blame ranges of ``path`` at commit ``oid``, as GraphQL returns them."""

@@ -308,12 +308,12 @@ def _set_deny_exceptions(d: dict, *, raw: object) -> None:
 
 
 _VALID_ATTESTATION = {
-    "name": "Migration risk",
-    "check": "Migration risk",
-    "app": "tests-posthog",
-    "lifts": ["migrations"],
-    "paths": ["migrations/[^/]+\\.py$"],
-    "publisher_paths": ["migration_analysis/"],
+    "name": "Dependency proof",
+    "actions_workflow": ".github/workflows/dependency-proof.yml",
+    "job": "prove",
+    "lifts": ["deps_toolchain"],
+    "paths": ["^pnpm-lock\\.yaml$"],
+    "publisher_paths": ["^\\.github/scripts/prove-dependencies\\.py$"],
 }
 
 
@@ -416,8 +416,12 @@ def _set_attestation(d: dict, **changes: object) -> None:
                 ("lifts-self-governance", {"lifts": ["stamphog_policy"]}),
                 ("lifts-unknown-category", {"lifts": ["dependencies"]}),
                 ("no-paths", {"paths": []}),
-                ("no-check", {"check": None}),
-                ("no-app", {"app": None}),
+                ("both-sources", {"check": "Dependency proof"}),
+                ("no-source", {"actions_workflow": None, "job": None}),
+                ("workflow-without-job", {"job": None}),
+                ("workflow-outside-actions", {"actions_workflow": ".depot/workflows/dependency-proof.yml"}),
+                ("app-on-workflow", {"app": "github-actions"}),
+                ("check-without-app", {"check": "Dependency proof", "actions_workflow": None, "job": None}),
                 ("no-publisher-paths", {"publisher_paths": None}),
                 ("invalid-publisher-path", {"publisher_paths": ["("]}),
                 ("unknown-key", {"lift": ["deps_toolchain"]}),

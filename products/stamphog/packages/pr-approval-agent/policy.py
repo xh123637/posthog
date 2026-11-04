@@ -120,21 +120,29 @@ class DenyCategory:
 class Attestation:
     """A CI result trusted to lift deny categories for the files it lists (see attestations.py).
 
-    The source is a check run by name, pinned to the App that publishes it, because a same-repo
-    PR's workflow can create a check run of any name. `paths` are regexes for the files the result
-    is expected to judge. A PR that changes one waits for the result, and the result can lift
-    nothing outside them. The publisher's own trigger must cover them, or such a PR waits for a run
-    that never comes. `publisher_paths` are regexes for the in-repo files that produce the result,
-    such as its workflow and the scripts that workflow runs. A PR that edits one ran its own copy
-    of them, so its result lifts nothing and waits for nothing.
+    Exactly one source is set: a check run by name, pinned to the App that publishes it because a
+    same-repo PR's workflow can create a check run of any name, or a GitHub Actions job found by
+    workflow path. `paths` are regexes for the files the result is expected to judge. A PR that
+    changes one waits for the result, and the result can lift nothing outside them. The
+    publisher's own trigger must cover them, or such a PR waits for a run that never comes.
+    `publisher_paths` are regexes for the in-repo files that produce the result, such as its
+    workflow and the scripts that workflow runs. A PR that edits one ran its own copy of them, so
+    its result lifts nothing and waits for nothing.
     """
 
     name: str
     lifts: tuple[str, ...]
     paths: tuple[str, ...]
     publisher_paths: tuple[str, ...]
-    check: str
-    app: str
+    check: str | None = None
+    app: str | None = None
+    actions_workflow: str | None = None
+    job: str | None = None
+
+    @property
+    def wake_check_name(self) -> str:
+        """The check run whose completion can change this attestation's result."""
+        return self.check or self.job or ""
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -494,7 +502,8 @@ def _assert_self_governance(deny: dict[str, DenyCategory]) -> None:
         _require(token in paths, f"deny.stamphog_policy: self-governance must cover {token!r}")
 
 
-_ATTESTATION_KEYS = {"name", "lifts", "paths", "publisher_paths", "check", "app"}
+_ATTESTATION_KEYS = {"name", "lifts", "paths", "publisher_paths", "check", "app", "actions_workflow", "job"}
+_ACTIONS_WORKFLOW_RE = re.compile(r"^\.github/workflows/[\w.-]+\.ya?ml$")
 
 
 def _nonempty_strings(raw: object, context: str) -> tuple[str, ...]:
@@ -533,11 +542,27 @@ def _parse_attestations(raw: object, deny: dict[str, DenyCategory]) -> tuple[Att
             for pattern in patterns:
                 _compile_or_raise(pattern, f"{context}.{key}")
         check = _optional_string(spec, "check", context)
-        _require(check is not None, f"{context}.check: required")
         app = _optional_string(spec, "app", context)
-        _require(app is not None, f"{context}.app: required")
+        workflow = _optional_string(spec, "actions_workflow", context)
+        job = _optional_string(spec, "job", context)
+        _require((check is None) != (workflow is None), f"{context}: set exactly one of check or actions_workflow")
+        _require((app is None) == (check is None), f"{context}.app: a check entry needs an app, and only a check entry names one")
+        _require((job is None) == (workflow is None), f"{context}.job: an actions_workflow entry needs a job")
+        _require(
+            workflow is None or bool(_ACTIONS_WORKFLOW_RE.match(workflow)),
+            f"{context}.actions_workflow: must be a .github/workflows/*.yml path",
+        )
         parsed.append(
-            Attestation(name=name, lifts=lifts, paths=paths, publisher_paths=publisher_paths, check=check, app=app)
+            Attestation(
+                name=name,
+                lifts=lifts,
+                paths=paths,
+                publisher_paths=publisher_paths,
+                check=check,
+                app=app,
+                actions_workflow=workflow,
+                job=job,
+            )
         )
     return tuple(parsed)
 

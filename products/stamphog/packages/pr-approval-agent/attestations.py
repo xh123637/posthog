@@ -5,10 +5,17 @@ categories it may lift, and `paths`, the files it is expected to judge. A result
 categories only for the files it lists itself, intersected with `paths` and the PR's files.
 The engine knows no ecosystem, tool or bot. The publisher decides what a passing result proves.
 
-A result lists its files in a `<!-- stamphog:v1 [...] -->` marker in the check's summary. It is
-read from the head commit's check runs, which GitHub binds to that commit. A PR that edits one of
-the attestation's `publisher_paths` ran its own copy of the publisher, so its result lifts nothing
-and waits for nothing.
+A result lists its files in a `<!-- stamphog:v1 [...] -->` marker. A check entry puts it in the
+check's summary. An Actions entry puts it in a notice annotation of the job, because an Actions
+job cannot publish a check summary and the API cannot read its step summary.
+
+A check entry is read from the head commit's check runs, which GitHub binds to that commit. An
+Actions entry needs the run looked up by workflow path, event, PR and base, which only the hosted
+server can do, so it arrives as `PRData.attestation_results`. An Actions entry without a result
+there was not looked up (a local run) and lifts nothing.
+
+A PR that edits one of the attestation's `publisher_paths` ran its own copy of the publisher, so
+its result lifts nothing and waits for nothing.
 """
 
 import re
@@ -61,16 +68,39 @@ def _check_result(rule: Attestation, check_runs: Iterable[dict]) -> frozenset[st
     return marker_files((latest.get("output") or {}).get("summary") or "")
 
 
+def _actions_result(rule: Attestation, results: Mapping[str, dict], edited: set[str]) -> frozenset[str] | None:
+    raw = results.get(rule.name)
+    if rule.actions_workflow in edited or edited - _expected_files(rule, edited) or not isinstance(raw, dict):
+        return frozenset()
+    if not raw.get("completed"):
+        return None
+    files = raw.get("files") if raw.get("conclusion") == "success" else None
+    return frozenset(f for f in files or () if isinstance(f, str))
+
+
 def resolve_results(
-    rules: Iterable[Attestation], check_runs: Iterable[dict], pr_files: Iterable[str]
+    rules: Iterable[Attestation],
+    check_runs: Iterable[dict],
+    actions_results: Mapping[str, dict],
+    pr_files: Iterable[str],
 ) -> dict[str, frozenset[str] | None]:
-    """Each rule's result by name. None means it has not reported for this head yet."""
+    """Each rule's result by name. None means it has not reported for this head yet.
+
+    A ``pull_request`` run executes the PR's own copy of its workflow and of every file that workflow
+    runs. So an Actions result lifts nothing and waits for nothing when the PR edits that workflow or
+    any file outside the attestation's ``paths``.
+    """
     check_runs = list(check_runs)
-    pr_files = list(pr_files)
-    return {
-        rule.name: frozenset() if _edits_publisher(rule, pr_files) else _check_result(rule, check_runs)
-        for rule in rules
-    }
+    edited = set(pr_files)
+
+    def result(rule: Attestation) -> frozenset[str] | None:
+        if _edits_publisher(rule, edited):
+            return frozenset()
+        if rule.check:
+            return _check_result(rule, check_runs)
+        return _actions_result(rule, actions_results, edited)
+
+    return {rule.name: result(rule) for rule in rules}
 
 
 def _expected_files(rule: Attestation, pr_files: Iterable[str]) -> set[str]:
