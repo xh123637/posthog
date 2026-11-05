@@ -52,7 +52,7 @@ _BASE = TaskProfile(
     mcp_store_servers=True,
     mcp_exclude_tools=(),
     oauth_app=OAuthApp.ARRAY,
-    github_resolution=GithubResolution.ALWAYS,
+    github_resolution=GithubResolution.WITH_REPOSITORY,
     github_access=GithubAccess.WRITE,
     user_authorable_prs=False,
     default_pr_authorship=PrAuthorship.BOT,
@@ -79,6 +79,7 @@ USER = replace(
     runtimes=("acp", "pi"),
     network=NetworkPolicy(levels=(NetworkAccess.FULL, NetworkAccess.TRUSTED, NetworkAccess.CUSTOM)),
     warm=WarmPolicy(quota=WarmQuota.NONE, per_user_cap=10, per_org_cap=100, feature_flag=PREWARM_SANDBOX_FLAG),
+    github_resolution=GithubResolution.ALWAYS,
     user_authorable_prs=True,
     default_pr_authorship=PrAuthorship.USER,
     idle_minutes=60,
@@ -117,7 +118,12 @@ SPACE_SETUP = replace(
 )
 
 IMAGE_BUILDER = replace(
-    _BASE, key="image_builder", origin_product="image_builder", idle_minutes=60, max_wake_minutes=None
+    _BASE,
+    key="image_builder",
+    origin_product="image_builder",
+    github_resolution=GithubResolution.ALWAYS,
+    idle_minutes=60,
+    max_wake_minutes=None,
 )
 
 TASK_ANALYSIS = replace(
