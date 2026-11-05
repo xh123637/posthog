@@ -5229,6 +5229,16 @@
                   "table": null,
                   "type": "integer"
               },
+              "expired_at": {
+                  "chain": null,
+                  "fields": null,
+                  "hogql_value": "expired_at",
+                  "id": null,
+                  "name": "expired_at",
+                  "schema_valid": true,
+                  "table": null,
+                  "type": "datetime"
+              },
               "created_by_id": {
                   "chain": null,
                   "fields": null,
@@ -5307,6 +5317,16 @@
                   "schema_valid": true,
                   "table": null,
                   "type": "boolean"
+              },
+              "expired_at": {
+                  "chain": null,
+                  "fields": null,
+                  "hogql_value": "expired_at",
+                  "id": null,
+                  "name": "expired_at",
+                  "schema_valid": true,
+                  "table": null,
+                  "type": "datetime"
               },
               "current_revision_id": {
                   "chain": null,
@@ -20334,6 +20354,16 @@
                   "table": null,
                   "type": "integer"
               },
+              "expired_at": {
+                  "chain": null,
+                  "fields": null,
+                  "hogql_value": "expired_at",
+                  "id": null,
+                  "name": "expired_at",
+                  "schema_valid": true,
+                  "table": null,
+                  "type": "datetime"
+              },
               "created_by_id": {
                   "chain": null,
                   "fields": null,
@@ -20412,6 +20442,16 @@
                   "schema_valid": true,
                   "table": null,
                   "type": "boolean"
+              },
+              "expired_at": {
+                  "chain": null,
+                  "fields": null,
+                  "hogql_value": "expired_at",
+                  "id": null,
+                  "name": "expired_at",
+                  "schema_valid": true,
+                  "table": null,
+                  "type": "datetime"
               },
               "current_revision_id": {
                   "chain": null,

@@ -14,7 +14,7 @@ import type { HealthPanelFinding } from './healthPanelFindings'
 const check = (
     key: ExperimentHealthCheckResultApi['key'],
     status: ExperimentHealthCheckResultApi['status']
-): HealthPanelCheck => ({ key, name: key, status, reason: null })
+): ExperimentHealthCheckResultApi => ({ key, name: key, description: '', status, reason: null, values: {}, rule: null })
 
 const finding = (severity: HealthPanelFinding['severity']): HealthPanelFinding => ({
     code: 'no_metric',
