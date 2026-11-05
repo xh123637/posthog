@@ -1297,24 +1297,11 @@ export interface SlackThreadReferenceDTOApi {
  * * `posthog_desktop` - PostHog Desktop
  * * `posthog_mobile` - PostHog Mobile
  * * `posthog_web` - PostHog Web
+ * * `slack` - Slack
  */
 export type TaskClientProvenanceEnumApi = (typeof TaskClientProvenanceEnumApi)[keyof typeof TaskClientProvenanceEnumApi]
 
 export const TaskClientProvenanceEnumApi = {
-    PosthogDesktop: 'posthog_desktop',
-    PosthogMobile: 'posthog_mobile',
-    PosthogWeb: 'posthog_web',
-} as const
-
-/**
- * * `posthog_desktop` - PostHog Desktop
- * * `posthog_mobile` - PostHog Mobile
- * * `posthog_web` - PostHog Web
- * * `slack` - Slack
- */
-export type TaskClientEnumApi = (typeof TaskClientEnumApi)[keyof typeof TaskClientEnumApi]
-
-export const TaskClientEnumApi = {
     PosthogDesktop: 'posthog_desktop',
     PosthogMobile: 'posthog_mobile',
     PosthogWeb: 'posthog_web',
@@ -1385,7 +1372,8 @@ export interface TaskDetailDTOApi {
      *
      * * `posthog_desktop` - PostHog Desktop
      * * `posthog_mobile` - PostHog Mobile
-     * * `posthog_web` - PostHog Web */
+     * * `posthog_web` - PostHog Web
+     * * `slack` - Slack */
     client_provenance?: TaskClientProvenanceEnumApi | null
     /** Client the latest person turn on this task came from. Null when no turn came from a known client.
      *
@@ -1393,7 +1381,7 @@ export interface TaskDetailDTOApi {
      * * `posthog_mobile` - PostHog Mobile
      * * `posthog_web` - PostHog Web
      * * `slack` - Slack */
-    last_client?: TaskClientEnumApi | null
+    last_client?: TaskClientProvenanceEnumApi | null
     /**
      * When the latest person turn from `last_client` arrived.
      * @nullable
@@ -1467,7 +1455,8 @@ export interface TaskBasicApi {
      *
      * * `posthog_desktop` - PostHog Desktop
      * * `posthog_mobile` - PostHog Mobile
-     * * `posthog_web` - PostHog Web */
+     * * `posthog_web` - PostHog Web
+     * * `slack` - Slack */
     client_provenance?: TaskClientProvenanceEnumApi | null
     /** Client the latest person turn on this task came from. Null when no turn came from a known client.
      *
@@ -1475,7 +1464,7 @@ export interface TaskBasicApi {
      * * `posthog_mobile` - PostHog Mobile
      * * `posthog_web` - PostHog Web
      * * `slack` - Slack */
-    last_client?: TaskClientEnumApi | null
+    last_client?: TaskClientProvenanceEnumApi | null
     /**
      * When the latest person turn from `last_client` arrived.
      * @nullable
@@ -1832,7 +1821,8 @@ export interface TaskCreateResponseDTOApi {
      *
      * * `posthog_desktop` - PostHog Desktop
      * * `posthog_mobile` - PostHog Mobile
-     * * `posthog_web` - PostHog Web */
+     * * `posthog_web` - PostHog Web
+     * * `slack` - Slack */
     client_provenance?: TaskClientProvenanceEnumApi | null
     /** Client the latest person turn on this task came from. Null when no turn came from a known client.
      *
@@ -1840,7 +1830,7 @@ export interface TaskCreateResponseDTOApi {
      * * `posthog_mobile` - PostHog Mobile
      * * `posthog_web` - PostHog Web
      * * `slack` - Slack */
-    last_client?: TaskClientEnumApi | null
+    last_client?: TaskClientProvenanceEnumApi | null
     /**
      * When the latest person turn from `last_client` arrived.
      * @nullable
@@ -2837,7 +2827,8 @@ export interface TaskRunResponseApi {
      *
      * * `posthog_desktop` - PostHog Desktop
      * * `posthog_mobile` - PostHog Mobile
-     * * `posthog_web` - PostHog Web */
+     * * `posthog_web` - PostHog Web
+     * * `slack` - Slack */
     client_provenance?: TaskClientProvenanceEnumApi | null
     /** Client the latest person turn on this task came from. Null when no turn came from a known client.
      *
@@ -2845,7 +2836,7 @@ export interface TaskRunResponseApi {
      * * `posthog_mobile` - PostHog Mobile
      * * `posthog_web` - PostHog Web
      * * `slack` - Slack */
-    last_client?: TaskClientEnumApi | null
+    last_client?: TaskClientProvenanceEnumApi | null
     /**
      * When the latest person turn from `last_client` arrived.
      * @nullable
@@ -5469,6 +5460,7 @@ export type TasksListParams = {
      * * `posthog_desktop` - PostHog Desktop
      * * `posthog_mobile` - PostHog Mobile
      * * `posthog_web` - PostHog Web
+     * * `slack` - Slack
      * @minLength 1
      */
     client_provenance?: TasksListClientProvenance
@@ -5629,6 +5621,7 @@ export const TasksListClientProvenance = {
     PosthogDesktop: 'posthog_desktop',
     PosthogMobile: 'posthog_mobile',
     PosthogWeb: 'posthog_web',
+    Slack: 'slack',
 } as const
 
 export type TasksListExcludeOriginProduct =
