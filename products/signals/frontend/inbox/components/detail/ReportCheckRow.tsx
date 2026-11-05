@@ -4,6 +4,7 @@ import { LemonButton, LemonTag, Tooltip } from '@posthog/lemon-ui'
 import { LemonDialog } from 'lib/lemon-ui/LemonDialog'
 
 import { ReportCheckRowData } from './reportCheckPresentation'
+import { reportCheckStopConfirmation } from './reportCheckStopConfirmation'
 import { ReportCheckTiming } from './ReportCheckTiming'
 
 /**
@@ -58,18 +59,19 @@ export function ReportCheckRow({
                         disabledReason={cancelling ? 'Stopping this check' : undefined}
                         data-attr="signals-report-check-stop"
                         className="shrink-0 opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100"
-                        onClick={() =>
+                        onClick={() => {
+                            const confirmation = reportCheckStopConfirmation(check)
                             LemonDialog.open({
-                                title: 'Stop this check?',
-                                description: `"${check.title}" will not run, and nothing will report back on it. Results it already recorded stay on this report.`,
+                                title: confirmation.title,
+                                description: confirmation.description,
                                 primaryButton: {
-                                    children: 'Stop check',
+                                    children: confirmation.confirmLabel,
                                     status: 'danger',
                                     onClick: () => onCancel(check.id),
                                 },
-                                secondaryButton: { children: 'Keep it' },
+                                secondaryButton: { children: confirmation.dismissLabel },
                             })
-                        }
+                        }}
                     >
                         Stop
                     </LemonButton>
