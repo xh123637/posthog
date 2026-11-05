@@ -4137,6 +4137,8 @@ class SignalSpend(TeamScopedRootMixin, UUIDModel):
     accounting_failed = models.BooleanField(default=False)
     finalized_at = models.DateTimeField(null=True, blank=True, db_index=True)
     billing_exempt = models.BooleanField(default=False, db_default=False)
+    # Snapshotted by the database so old workers also retain trial visibility after run deletion.
+    is_private = models.BooleanField(null=True, db_default=None)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
