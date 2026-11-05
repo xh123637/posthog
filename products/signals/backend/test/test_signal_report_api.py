@@ -74,6 +74,7 @@ from products.signals.backend.models import (
     SignalUserAutonomyConfig,
 )
 from products.signals.backend.personal_ranking.candidates import recommended_order
+from products.signals.backend.ranking.cache import refresh_report_ranking_cache
 from products.signals.backend.report_assignments import create_claim
 from products.signals.backend.report_claims import get_active_claim
 from products.signals.backend.report_merge import MERGE_DISMISSAL_REASON
@@ -1285,6 +1286,7 @@ class TestSignalReportListAPI(APIBaseTest):
         SignalReportArtefact.objects.filter(pk=latest_edit.pk).update(
             created_at=datetime(2026, 9, 20, edit_hour, 30, tzinfo=UTC)
         )
+        refresh_report_ranking_cache(team_id=self.team.id, report_id=edited.id)
 
         list_response = self.client.get(self._list_url(status="ready", ordering="-ranking_open,status,-updated_at"))
         assert list_response.status_code == status.HTTP_200_OK
@@ -1687,9 +1689,8 @@ class TestSignalReportListAPI(APIBaseTest):
             if query["sql"].startswith('SELECT "signals_signalreport"."id" AS "pk"')
         ]
         assert len(list_sql) == 1
-        # The sort reads every matching report, so a priority subquery repeated per CASE branch
-        # multiplies the artefact walks for the whole team.
-        assert list_sql[0].count("'priority_judgment'") == 1
+        assert "priority_judgment" not in list_sql[0]
+        assert "priority_sort_rank" in list_sql[0]
         ids = [r["id"] for r in response.json()["results"]]
         assert ids.index(str(r_p0.id)) < ids.index(str(r_p1.id))
         assert ids.index(str(r_p1.id)) < ids.index(str(r_p2.id))
@@ -1755,6 +1756,7 @@ class TestSignalReportListAPI(APIBaseTest):
         self._ranking_score_artefact(no_head, scores={other_head: 0.5})
         stale = self._ranking_score_artefact(low, scores={head: 0.99})
         SignalReportArtefact.objects.filter(pk=stale.pk).update(created_at=timezone.now() - timedelta(days=1))
+        refresh_report_ranking_cache(team_id=self.team.id, report_id=low.id)
         impossible_time = self._create_report(title="Impossible time")
         impossible_score = self._ranking_score_artefact(impossible_time, scores={head: 0.4})
         SignalReportArtefact.objects.filter(pk=impossible_score.pk).update(
@@ -1867,9 +1869,8 @@ class TestSignalReportListAPI(APIBaseTest):
             if query["sql"].startswith('SELECT "signals_signalreport"."id" AS "pk"')
         ]
         assert len(list_sql) == 1
-        # The sort reads every matching report, so a score subquery repeated in the ORDER BY
-        # multiplies the artefact walks for the whole team.
-        assert list_sql[0].count("'ranking_score'") == 1
+        assert "ranking_score" not in list_sql[0]
+        assert "ranking_action_score" in list_sql[0]
         get_flag.assert_called_once()
         assert get_flag.call_args.args[1] == self.user.distinct_id
         body = response.json()
