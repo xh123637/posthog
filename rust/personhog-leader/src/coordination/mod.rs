@@ -23,6 +23,7 @@ use crate::fencing::{
 };
 use crate::inflight::InflightTracker;
 use crate::pg::PgFallback;
+use crate::property_read::PropertyRead;
 use crate::warming::{warm_from_sources, WarmClientPools, WarmingConfig};
 
 /// The config a partition was acquired under.
@@ -114,6 +115,7 @@ pub struct LeaderHandoffHandler {
     freshly_fenced: Arc<dashmap::DashSet<u32>>,
     captures: ChangelogCaptures,
     changelog: LiveChangelog,
+    property_read: Option<PropertyRead>,
 }
 
 impl LeaderHandoffHandler {
@@ -146,7 +148,13 @@ impl LeaderHandoffHandler {
             freshly_fenced: Arc::new(dashmap::DashSet::new()),
             captures,
             changelog,
+            property_read: None,
         }
+    }
+
+    pub fn with_property_read(mut self, read: PropertyRead) -> Self {
+        self.property_read = Some(read);
+        self
     }
 
     /// The capture, else the live config: a preconnect runs before the capture.
@@ -326,6 +334,19 @@ impl HandoffHandler for LeaderHandoffHandler {
         }
         info!(partition, "warming partition cache from kafka");
         self.check_authority(partition, "warm")?;
+        // Before the fence, so a store that cannot serve the partition does not move its epoch.
+        if let Some(read) = &self.property_read {
+            if let Err(e) = read
+                .reader
+                .open_partition(partition, config.partitions)
+                .await
+            {
+                return Err(Error::HandoffFailed {
+                    partition,
+                    reason: format!("property store shards unavailable: {e}"),
+                });
+            }
+        }
         // Broker-side fencing before the warm read, not after: acquiring
         // the fence bumps the producer epoch and aborts any in-flight
         // transaction from a predecessor, so every write a stale owner
@@ -428,6 +449,9 @@ impl HandoffHandler for LeaderHandoffHandler {
                         == *capture.key()
             })
         });
+        if let Some(read) = &self.property_read {
+            read.reader.release_partition(partition, modulus);
+        }
         self.captures.remove(&partition);
         // The incoming owner derives versions from the changelog, which
         // is the authority these floors stood in for; carrying them would
@@ -554,6 +578,73 @@ mod tests {
         let clock = Arc::new(AuthorityClock::unclaimed());
         clock.begin_session(Duration::from_secs(3600), std::time::Instant::now());
         clock
+    }
+
+    #[tokio::test]
+    async fn a_slatedb_warm_fails_before_the_fence_when_shards_cannot_open() {
+        use personhog_property_store::object_store::local::LocalFileSystem;
+        use personhog_property_store::{PropertyReader, PropertyStoreConfig};
+
+        let dir = tempfile::tempdir().unwrap();
+        let reader = Arc::new(PropertyReader::new(
+            &PropertyStoreConfig::local("props", 4),
+            Arc::new(LocalFileSystem::new_with_prefix(dir.path()).unwrap()),
+        ));
+        let handler = handler().with_property_read(PropertyRead {
+            reader: Arc::clone(&reader),
+        });
+
+        let warmed = handler.warm_partition(0).await;
+
+        assert!(
+            matches!(&warmed, Err(Error::HandoffFailed { reason, .. }) if reason.contains("property store")),
+            "{warmed:?}"
+        );
+        reader.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn releasing_a_partition_lets_its_property_store_shards_close() {
+        use personhog_property_store::object_store::local::LocalFileSystem;
+        use personhog_property_store::object_store::ObjectStore;
+        use personhog_property_store::{
+            PartitionKey, PropertyReader, PropertyStoreConfig, PropertyWriter,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let store: Arc<dyn ObjectStore> =
+            Arc::new(LocalFileSystem::new_with_prefix(dir.path()).unwrap());
+        let config = PropertyStoreConfig {
+            reader_idle_secs: 1,
+            ..PropertyStoreConfig::local("props", 8)
+        };
+        let writer = PropertyWriter::new(&config, Arc::clone(&store));
+        let key = PartitionKey {
+            topic: Arc::from("personhog_updates"),
+            partition: 1,
+        };
+        writer.assign(&key, 1, 4, || true).await.unwrap();
+        let reader = Arc::new(PropertyReader::new(&config, store));
+        let handler = handler().with_property_read(PropertyRead {
+            reader: Arc::clone(&reader),
+        });
+        reader.open_partition(1, 4).await.unwrap();
+
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert_eq!(
+            reader.close_idle().await,
+            2,
+            "an owned partition's shards stay open"
+        );
+        handler.release_partition(1).await.unwrap();
+        assert_eq!(
+            reader.close_idle().await,
+            0,
+            "a released partition's shards close when idle"
+        );
+
+        reader.close().await;
+        writer.close().await;
     }
 
     #[tokio::test]
