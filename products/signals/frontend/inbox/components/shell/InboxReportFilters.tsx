@@ -3,44 +3,30 @@ import { useActions, useValues } from 'kea'
 import { IconCalendar } from '@posthog/icons'
 import { LemonSelect } from '@posthog/lemon-ui'
 
-import {
-    INBOX_CREATED_WINDOW_OPTIONS,
-    INBOX_PRIORITY_OPTIONS,
-    inboxPriorityFilterLabel,
-    PRIORITY_ACCENT,
-    PRIORITY_MEANING,
-} from '../../filterOptions'
+import { INBOX_CREATED_WINDOW_OPTIONS, INBOX_PRIORITY_OPTIONS, inboxPriorityFilterLabel } from '../../filterOptions'
 import { InboxCreatedWindow, inboxFiltersLogic } from '../../logics/inboxFiltersLogic'
 import { SignalReportPriority } from '../../types'
+import { InboxPriorityDot } from './InboxPriorityDot'
 import { InboxSourceFilter } from './InboxSourceFilter'
 import { InboxStateFilter } from './InboxStateFilter'
+import { INBOX_ANY_TIME_LABEL, inboxCreatedWindowLabel, inboxPriorityOptionLabel } from './inboxToolbarOptions'
 
 const ALL_PRIORITIES = null
 
 const PRIORITY_SELECT_OPTIONS = [
-    { value: ALL_PRIORITIES, label: 'All priorities' },
+    { value: ALL_PRIORITIES, label: inboxPriorityFilterLabel([]) },
     ...INBOX_PRIORITY_OPTIONS.map((priority) => ({
         value: priority,
-        label: `${priority} · ${PRIORITY_MEANING[priority].label}`,
-        icon: (
-            <span
-                className="size-2 rounded-full"
-                // eslint-disable-next-line react/forbid-dom-props
-                style={{ backgroundColor: PRIORITY_ACCENT[priority] }}
-            />
-        ),
+        label: inboxPriorityOptionLabel(priority),
+        icon: <InboxPriorityDot priority={priority} />,
     })),
 ]
 
 const ANY_TIME = null
 const CREATED_WINDOW_SELECT_OPTIONS: { value: InboxCreatedWindow | null; label: string }[] = [
-    { value: ANY_TIME, label: 'Any time' },
+    { value: ANY_TIME, label: INBOX_ANY_TIME_LABEL },
     ...INBOX_CREATED_WINDOW_OPTIONS.map(({ value, label }) => ({ value, label })),
 ]
-
-function createdWindowLabel(window: InboxCreatedWindow | null): string {
-    return CREATED_WINDOW_SELECT_OPTIONS.find((option) => option.value === window)?.label ?? 'Any time'
-}
 
 function PanelField({ label, children }: { label: string; children: JSX.Element }): JSX.Element {
     return (
@@ -93,15 +79,15 @@ export function InboxReportFilters({ layout = 'row' }: { layout?: 'row' | 'panel
                         onChange={(window) => setCreatedWindow(window)}
                         options={CREATED_WINDOW_SELECT_OPTIONS}
                         icon={<IconCalendar />}
-                        tooltip={panel ? undefined : `Created: ${createdWindowLabel(createdWindow)}`}
+                        tooltip={panel ? undefined : `Created: ${inboxCreatedWindowLabel(createdWindow)}`}
                         // The window value ("7d") doubles as the short label in a narrow container.
                         renderButtonContent={(leaf) =>
                             panel ? (
-                                (leaf?.label ?? 'Any time')
+                                (leaf?.label ?? INBOX_ANY_TIME_LABEL)
                             ) : (
                                 <>
-                                    <span className="@2xl:hidden">{leaf?.value ?? 'Any time'}</span>
-                                    <span className="hidden @2xl:inline">{leaf?.label ?? 'Any time'}</span>
+                                    <span className="@2xl:hidden">{leaf?.value ?? INBOX_ANY_TIME_LABEL}</span>
+                                    <span className="hidden @2xl:inline">{leaf?.label ?? INBOX_ANY_TIME_LABEL}</span>
                                 </>
                             )
                         }
