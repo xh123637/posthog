@@ -1983,6 +1983,46 @@ class HogQueryResponse(BaseModel):
     stdout: str | None = None
 
 
+class InboxUsageCredits(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    exempt_credits: str = Field(..., description="Billing-exempt subset of total_credits.")
+    incomplete: bool
+    total_credits: str = Field(
+        ...,
+        description=("Recorded finalized credits, including exemptions. Decimal strings preserve fractional credits."),
+    )
+
+
+class InboxUsagePricing(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    currency: Literal["USD"] = "USD"
+    usd_per_credit: str = Field(
+        ...,
+        description=("Multiply credits by this value for recorded USD usage, before billing adjustments."),
+    )
+
+
+class InboxUsageSource(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    exempt_credits: str = Field(..., description="Billing-exempt subset of total_credits.")
+    implementation_credits: str
+    incomplete: bool
+    processing_credits: str
+    research_credits: str
+    source_product: str | None = None
+    source_type: str | None = None
+    total_credits: str = Field(
+        ...,
+        description=("Recorded finalized credits, including exemptions. Decimal strings preserve fractional credits."),
+    )
+
+
 class InsightsThresholdBounds(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -6459,6 +6499,26 @@ class HogQuery(BaseModel):
     response: HogQueryResponse | None = None
     tags: QueryLogTags | None = None
     version: float | None = Field(default=None, description="version of the node, used for schema migrations")
+
+
+class InboxUsageScout(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    display_name: str
+    exempt_credits: str = Field(..., description="Billing-exempt subset of total_credits.")
+    incomplete: bool
+    reports_produced: int = Field(
+        ...,
+        description=("Distinct reports emitted by this scout; reports may be shared across scouts."),
+    )
+    run_count: int
+    scout_config_id: str | None = None
+    skill_name: str
+    total_credits: str = Field(
+        ...,
+        description=("Recorded finalized credits, including exemptions. Decimal strings preserve fractional credits."),
+    )
 
 
 class DayItem(BaseModel):
@@ -19627,6 +19687,86 @@ class IQRDetectorConfig(BaseModel):
     )
 
 
+class InboxUsage(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    as_of: AwareDatetime
+    attribution_incomplete: bool = Field(
+        ..., description="Missing source metadata is retained in a null-source bucket."
+    )
+    exempt_credits: str = Field(..., description="Billing-exempt subset of total_credits.")
+    incomplete: bool
+    period_end: AwareDatetime
+    period_start: AwareDatetime
+    pricing: InboxUsagePricing
+    project_id: int
+    scouts: list[InboxUsageScout] = Field(
+        ...,
+        description=("Scout execution only. These totals and source totals sum to total_credits."),
+    )
+    sources: list[InboxUsageSource] = Field(
+        ...,
+        description=("Processing, research and implementation. Excludes scout execution."),
+    )
+    total_credits: str = Field(
+        ...,
+        description=("Recorded finalized credits, including exemptions. Decimal strings preserve fractional credits."),
+    )
+    unsettled_credits: str = Field(
+        ...,
+        description=("Unfinalized credits created in the month, excluded from total_credits."),
+    )
+    untracked_scout_run_count: int
+
+
+class InboxUsageQueryResponse(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    error: str | None = Field(
+        default=None,
+        description=(
+            "Query error. Returned only if 'explain' or `modifiers.debug` is true. Throws an error otherwise."
+        ),
+    )
+    hogql: str | None = Field(default=None, description="Generated HogQL query.")
+    modifiers: HogQLQueryModifiers | None = Field(default=None, description="Modifiers used when performing the query")
+    query_status: QueryStatus | None = Field(
+        default=None,
+        description=("Query status indicates whether next to the provided data, a query is still running."),
+    )
+    resolved_compare_date_range: ResolvedDateRangeResponse | None = Field(
+        default=None,
+        description=("The resolved previous/comparison period date range, when comparing against another period"),
+    )
+    resolved_date_range: ResolvedDateRangeResponse | None = Field(
+        default=None, description="The date range used for the query"
+    )
+    results: InboxUsage
+    timings: list[QueryTiming] | None = Field(
+        default=None,
+        description=("Measured timings for different parts of the query generation process"),
+    )
+    used_data_warehouse_sources: list[DataWarehouseSourceUsage] | None = Field(
+        default=None,
+        description=("Connector-synced data warehouse sources referenced by this query, if any."),
+    )
+    warnings: list[DataWarehouseSyncWarning | AccessControlFilterWarning] | None = Field(
+        default=None,
+        description=(
+            "Warnings about data warehouse sources referenced by the query whose"
+            " latest sync failed, is paused, hit a billing limit, or is otherwise"
+            " stale. Results may not reflect current source data. Accumulated"
+            " across every HogQL execution that contributes to this response — so"
+            " insights backed by warehouse tables (Trends, Funnels, etc.) receive"
+            " the same warnings as raw HogQL queries. Also carries access control"
+            " warnings when a system-table query filters out objects the user can't"
+            " access."
+        ),
+    )
+
+
 class InsightActorsQueryBase(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -25528,7 +25668,7 @@ class QueryResponseAlternative88(BaseModel):
     resolved_date_range: ResolvedDateRangeResponse | None = Field(
         default=None, description="The date range used for the query"
     )
-    results: list[UsageMetric]
+    results: InboxUsage
     timings: list[QueryTiming] | None = Field(
         default=None,
         description=("Measured timings for different parts of the query generation process"),
@@ -25553,6 +25693,53 @@ class QueryResponseAlternative88(BaseModel):
 
 
 class QueryResponseAlternative89(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    error: str | None = Field(
+        default=None,
+        description=(
+            "Query error. Returned only if 'explain' or `modifiers.debug` is true. Throws an error otherwise."
+        ),
+    )
+    hogql: str | None = Field(default=None, description="Generated HogQL query.")
+    modifiers: HogQLQueryModifiers | None = Field(default=None, description="Modifiers used when performing the query")
+    query_status: QueryStatus | None = Field(
+        default=None,
+        description=("Query status indicates whether next to the provided data, a query is still running."),
+    )
+    resolved_compare_date_range: ResolvedDateRangeResponse | None = Field(
+        default=None,
+        description=("The resolved previous/comparison period date range, when comparing against another period"),
+    )
+    resolved_date_range: ResolvedDateRangeResponse | None = Field(
+        default=None, description="The date range used for the query"
+    )
+    results: list[UsageMetric]
+    timings: list[QueryTiming] | None = Field(
+        default=None,
+        description=("Measured timings for different parts of the query generation process"),
+    )
+    used_data_warehouse_sources: list[DataWarehouseSourceUsage] | None = Field(
+        default=None,
+        description=("Connector-synced data warehouse sources referenced by this query, if any."),
+    )
+    warnings: list[DataWarehouseSyncWarning | AccessControlFilterWarning] | None = Field(
+        default=None,
+        description=(
+            "Warnings about data warehouse sources referenced by the query whose"
+            " latest sync failed, is paused, hit a billing limit, or is otherwise"
+            " stale. Results may not reflect current source data. Accumulated"
+            " across every HogQL execution that contributes to this response — so"
+            " insights backed by warehouse tables (Trends, Funnels, etc.) receive"
+            " the same warnings as raw HogQL queries. Also carries access control"
+            " warnings when a system-table query filters out objects the user can't"
+            " access."
+        ),
+    )
+
+
+class QueryResponseAlternative90(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
@@ -25609,7 +25796,7 @@ class QueryResponseAlternative89(BaseModel):
     )
 
 
-class QueryResponseAlternative90(BaseModel):
+class QueryResponseAlternative91(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
@@ -25677,7 +25864,7 @@ class QueryResponseAlternative90(BaseModel):
     )
 
 
-class QueryResponseAlternative91(BaseModel):
+class QueryResponseAlternative92(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
@@ -25724,7 +25911,7 @@ class QueryResponseAlternative91(BaseModel):
     )
 
 
-class QueryResponseAlternative92(BaseModel):
+class QueryResponseAlternative93(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
@@ -25776,7 +25963,7 @@ class QueryResponseAlternative92(BaseModel):
     )
 
 
-class QueryResponseAlternative93(BaseModel):
+class QueryResponseAlternative94(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
@@ -25823,7 +26010,7 @@ class QueryResponseAlternative93(BaseModel):
     )
 
 
-class QueryResponseAlternative94(BaseModel):
+class QueryResponseAlternative95(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
@@ -25870,7 +26057,7 @@ class QueryResponseAlternative94(BaseModel):
     )
 
 
-class QueryResponseAlternative95(BaseModel):
+class QueryResponseAlternative96(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
@@ -25917,7 +26104,7 @@ class QueryResponseAlternative95(BaseModel):
     )
 
 
-class QueryResponseAlternative96(BaseModel):
+class QueryResponseAlternative97(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
@@ -25964,7 +26151,7 @@ class QueryResponseAlternative96(BaseModel):
     )
 
 
-class QueryResponseAlternative97(BaseModel):
+class QueryResponseAlternative98(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
@@ -26015,7 +26202,7 @@ class QueryResponseAlternative97(BaseModel):
     )
 
 
-class QueryResponseAlternative98(BaseModel):
+class QueryResponseAlternative99(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
@@ -26062,7 +26249,7 @@ class QueryResponseAlternative98(BaseModel):
     )
 
 
-class QueryResponseAlternative99(BaseModel):
+class QueryResponseAlternative100(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
@@ -26109,7 +26296,7 @@ class QueryResponseAlternative99(BaseModel):
     )
 
 
-class QueryResponseAlternative100(BaseModel):
+class QueryResponseAlternative101(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
@@ -26156,7 +26343,7 @@ class QueryResponseAlternative100(BaseModel):
     )
 
 
-class QueryResponseAlternative101(BaseModel):
+class QueryResponseAlternative102(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
@@ -26203,7 +26390,7 @@ class QueryResponseAlternative101(BaseModel):
     )
 
 
-class QueryResponseAlternative102(BaseModel):
+class QueryResponseAlternative103(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
@@ -26253,7 +26440,7 @@ class QueryResponseAlternative102(BaseModel):
     )
 
 
-class QueryResponseAlternative103(BaseModel):
+class QueryResponseAlternative104(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
@@ -26300,7 +26487,7 @@ class QueryResponseAlternative103(BaseModel):
     )
 
 
-class QueryResponseAlternative104(BaseModel):
+class QueryResponseAlternative105(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
@@ -26362,7 +26549,7 @@ class QueryResponseAlternative104(BaseModel):
     )
 
 
-class QueryResponseAlternative105(BaseModel):
+class QueryResponseAlternative106(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
@@ -26409,7 +26596,7 @@ class QueryResponseAlternative105(BaseModel):
     )
 
 
-class QueryResponseAlternative106(BaseModel):
+class QueryResponseAlternative107(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
@@ -26456,7 +26643,7 @@ class QueryResponseAlternative106(BaseModel):
     )
 
 
-class QueryResponseAlternative107(BaseModel):
+class QueryResponseAlternative108(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
@@ -26503,7 +26690,7 @@ class QueryResponseAlternative107(BaseModel):
     )
 
 
-class QueryResponseAlternative108(BaseModel):
+class QueryResponseAlternative109(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
@@ -26550,7 +26737,7 @@ class QueryResponseAlternative108(BaseModel):
     )
 
 
-class QueryResponseAlternative109(BaseModel):
+class QueryResponseAlternative110(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
@@ -26597,7 +26784,7 @@ class QueryResponseAlternative109(BaseModel):
     )
 
 
-class QueryResponseAlternative110(BaseModel):
+class QueryResponseAlternative111(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
@@ -26644,7 +26831,7 @@ class QueryResponseAlternative110(BaseModel):
     )
 
 
-class QueryResponseAlternative111(BaseModel):
+class QueryResponseAlternative112(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
@@ -26691,7 +26878,7 @@ class QueryResponseAlternative111(BaseModel):
     )
 
 
-class QueryResponseAlternative112(BaseModel):
+class QueryResponseAlternative113(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
@@ -26739,7 +26926,7 @@ class QueryResponseAlternative112(BaseModel):
     )
 
 
-class QueryResponseAlternative113(BaseModel):
+class QueryResponseAlternative114(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
@@ -28352,6 +28539,68 @@ class CachedExperimentQueryResponse(BaseModel):
     )
 
 
+class CachedInboxUsageQueryResponse(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    cache_key: str
+    cache_target_age: AwareDatetime | None = None
+    calculation_trigger: str | None = Field(
+        default=None,
+        description=("What triggered the calculation of the query, leave empty if user/immediate"),
+    )
+    error: str | None = Field(
+        default=None,
+        description=(
+            "Query error. Returned only if 'explain' or `modifiers.debug` is true. Throws an error otherwise."
+        ),
+    )
+    hogql: str | None = Field(default=None, description="Generated HogQL query.")
+    is_cached: bool
+    last_refresh: AwareDatetime
+    modifiers: HogQLQueryModifiers | None = Field(default=None, description="Modifiers used when performing the query")
+    next_allowed_client_refresh: AwareDatetime
+    query_metadata: dict[str, Any] | None = None
+    query_scan: QueryScanSummary | None = Field(
+        default=None,
+        description=("The rows and time of the run that produced these results, with its analysis once it is stored."),
+    )
+    query_status: QueryStatus | None = Field(
+        default=None,
+        description=("Query status indicates whether next to the provided data, a query is still running."),
+    )
+    resolved_compare_date_range: ResolvedDateRangeResponse | None = Field(
+        default=None,
+        description=("The resolved previous/comparison period date range, when comparing against another period"),
+    )
+    resolved_date_range: ResolvedDateRangeResponse | None = Field(
+        default=None, description="The date range used for the query"
+    )
+    results: InboxUsage
+    timezone: str
+    timings: list[QueryTiming] | None = Field(
+        default=None,
+        description=("Measured timings for different parts of the query generation process"),
+    )
+    used_data_warehouse_sources: list[DataWarehouseSourceUsage] | None = Field(
+        default=None,
+        description=("Connector-synced data warehouse sources referenced by this query, if any."),
+    )
+    warnings: list[DataWarehouseSyncWarning | AccessControlFilterWarning] | None = Field(
+        default=None,
+        description=(
+            "Warnings about data warehouse sources referenced by the query whose"
+            " latest sync failed, is paused, hit a billing limit, or is otherwise"
+            " stale. Results may not reflect current source data. Accumulated"
+            " across every HogQL execution that contributes to this response — so"
+            " insights backed by warehouse tables (Trends, Funnels, etc.) receive"
+            " the same warnings as raw HogQL queries. Also carries access control"
+            " warnings when a system-table query filters out objects the user can't"
+            " access."
+        ),
+    )
+
+
 class CachedInsightActorsQueryOptionsResponse(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -29695,6 +29944,21 @@ class HogQLQueryResponse(BaseModel):
             " the user can't access."
         ),
     )
+
+
+class InboxUsageQuery(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    kind: Literal["InboxUsageQuery"] = "InboxUsageQuery"
+    modifiers: HogQLQueryModifiers | None = Field(default=None, description="Modifiers used when performing the query")
+    month: str | None = Field(
+        default=None,
+        description=("UTC calendar month in YYYY-MM format. Defaults to the current month."),
+    )
+    response: InboxUsageQueryResponse | None = None
+    tags: QueryLogTags | None = None
+    version: float | None = Field(default=None, description="version of the node, used for schema migrations")
 
 
 class InsightActorsQueryOptionsResponse(BaseModel):
@@ -33518,6 +33782,7 @@ class QueryResponseAlternative(
         | QueryResponseAlternative111
         | QueryResponseAlternative112
         | QueryResponseAlternative113
+        | QueryResponseAlternative114
     ]
 ):
     root: (
@@ -33631,6 +33896,7 @@ class QueryResponseAlternative(
         | QueryResponseAlternative111
         | QueryResponseAlternative112
         | QueryResponseAlternative113
+        | QueryResponseAlternative114
     )
 
 
@@ -34764,6 +35030,7 @@ class HogQLAutocomplete(BaseModel):
         | SessionQuery
         | TraceNeighborsQuery
         | VectorSearchQuery
+        | InboxUsageQuery
         | UsageMetricsQuery
         | AccountsQuery
         | AccountsTableQuery
@@ -34901,6 +35168,7 @@ class HogQLMetadata(BaseModel):
         | SessionQuery
         | TraceNeighborsQuery
         | VectorSearchQuery
+        | InboxUsageQuery
         | UsageMetricsQuery
         | AccountsQuery
         | AccountsTableQuery
@@ -35051,6 +35319,7 @@ class MaxInsightContext(BaseModel):
         | SessionQuery
         | TraceNeighborsQuery
         | VectorSearchQuery
+        | InboxUsageQuery
         | UsageMetricsQuery
         | AccountsQuery
         | AccountsTableQuery
@@ -35196,6 +35465,7 @@ class QueryRequest(BaseModel):
         | SessionQuery
         | TraceNeighborsQuery
         | VectorSearchQuery
+        | InboxUsageQuery
         | UsageMetricsQuery
         | AccountsQuery
         | AccountsTableQuery
@@ -35334,6 +35604,7 @@ class QuerySchemaRoot(
         | SessionQuery
         | TraceNeighborsQuery
         | VectorSearchQuery
+        | InboxUsageQuery
         | UsageMetricsQuery
         | AccountsQuery
         | AccountsTableQuery
@@ -35442,6 +35713,7 @@ class QuerySchemaRoot(
         | SessionQuery
         | TraceNeighborsQuery
         | VectorSearchQuery
+        | InboxUsageQuery
         | UsageMetricsQuery
         | AccountsQuery
         | AccountsTableQuery
@@ -35555,6 +35827,7 @@ class QueryUpgradeRequest(BaseModel):
         | SessionQuery
         | TraceNeighborsQuery
         | VectorSearchQuery
+        | InboxUsageQuery
         | UsageMetricsQuery
         | AccountsQuery
         | AccountsTableQuery
@@ -35668,6 +35941,7 @@ class QueryUpgradeResponse(BaseModel):
         | SessionQuery
         | TraceNeighborsQuery
         | VectorSearchQuery
+        | InboxUsageQuery
         | UsageMetricsQuery
         | AccountsQuery
         | AccountsTableQuery
@@ -35826,6 +36100,7 @@ class VisualizationArtifactContent(BaseModel):
         | SessionQuery
         | TraceNeighborsQuery
         | VectorSearchQuery
+        | InboxUsageQuery
         | UsageMetricsQuery
         | AccountsQuery
         | AccountsTableQuery
