@@ -1,14 +1,3 @@
-"""Read-path parity: routing the web-analytics query runner to the dimensional
-precompute tables (for opted-in queries) must produce the same results as the v2
-pre-aggregated tables — including under multi-dimension filters, the capability
-the fixed-dimension tables exist to provide.
-
-The write-path parity test (`test_web_dimensional_precompute_parity`) asserts the
-dimensional table *contents* equal v2's. This test instead drives the query
-*runner* end-to-end, so it covers the read path the write-path test doesn't: the
-dimensional builder's table selection and the `job_id IN` dedup filter.
-"""
-
 from datetime import UTC, datetime
 
 import time_machine
@@ -41,6 +30,8 @@ from posthog.schema import (
 from posthog.hogql.query import execute_hogql_query
 
 from posthog.clickhouse.client import sync_execute
+from posthog.errors import CHQueryErrorQueryWasCancelled
+from posthog.exceptions import ClickHouseAtCapacity, ClickHouseQueryTimeOut
 from posthog.models.utils import uuid7
 from posthog.models.web_preaggregated.sql import WEB_BOUNCES_INSERT_SQL, WEB_STATS_INSERT_SQL
 
@@ -49,11 +40,15 @@ from products.web_analytics.backend.hogql_queries.test.web_preaggregated_test_ba
     WebAnalyticsPreAggregatedTestBase,
 )
 from products.web_analytics.backend.hogql_queries.web_dimensional_precompute import (
+    WEB_BOUNCES_DIMENSIONAL_READ_TABLE,
+    WEB_STATS_DIMENSIONAL_READ_TABLE,
     ensure_web_bounces_dimensional_precomputed,
     ensure_web_stats_dimensional_precomputed,
 )
 from products.web_analytics.backend.hogql_queries.web_dimensional_read import ready_dimensional_job_ids
 from products.web_analytics.backend.hogql_queries.web_overview import WebOverviewQueryRunner
+
+DIMENSIONAL_READ_TABLES = (WEB_STATS_DIMENSIONAL_READ_TABLE, WEB_BOUNCES_DIMENSIONAL_READ_TABLE)
 
 DATE_FROM = "2024-01-01"
 DATE_TO = "2024-01-02"
@@ -88,6 +83,12 @@ class TestWebDimensionalReadParity(WebAnalyticsPreAggregatedTestBase):
         for table in ("sharded_web_stats_dimensional_preaggregated", "sharded_web_bounces_dimensional_preaggregated"):
             sync_execute(f"SYSTEM STOP TTL MERGES {table}")
             self.addCleanup(sync_execute, f"SYSTEM START TTL MERGES {table}")
+        flag_patcher = patch(
+            "products.web_analytics.backend.hogql_queries.web_dimensional_read.feature_enabled_or_false",
+            return_value=True,
+        )
+        flag_patcher.start()
+        self.addCleanup(flag_patcher.stop)
         super().setUp()
 
     def _pageview(self, distinct_id: str, session: str, ts: str, **props) -> None:
@@ -109,6 +110,7 @@ class TestWebDimensionalReadParity(WebAnalyticsPreAggregatedTestBase):
                 "$host": "app.example.com",
                 "$device_type": "Desktop",
                 "$browser": "Chrome",
+                "$browser_version": 120,
                 "$os": "Windows",
                 "$viewport_width": 1920,
                 "$viewport_height": 1080,
@@ -188,6 +190,20 @@ class TestWebDimensionalReadParity(WebAnalyticsPreAggregatedTestBase):
         assert runner.used_preaggregated_tables, "expected the pre-aggregated path, not a live fallback"
         return runner.query_strategy(), self._sort_results(response.results), response
 
+    def _run_live(self, breakdown: WebStatsBreakdown, properties=None) -> list:
+        runner = WebStatsTableQueryRunner(
+            query=WebStatsTableQuery(
+                dateRange=DateRange(date_from=DATE_FROM, date_to=DATE_TO),
+                properties=properties or [],
+                breakdownBy=breakdown,
+                limit=100,
+            ),
+            team=self.team,
+        )
+        response = runner.calculate()
+        assert not runner.used_preaggregated_tables
+        return self._sort_results(response.results)
+
     @staticmethod
     def _counts(results: list) -> dict:
         # {breakdown_value: (visitors, views)} — anchors values so a both-routes-broken
@@ -218,8 +234,11 @@ class TestWebDimensionalReadParity(WebAnalyticsPreAggregatedTestBase):
         assert dimensional_strategy == "stats_table_dimensional"
         assert v2_response.preComputeStrategy == WebAnalyticsPreComputeStrategy.PRE_AGGREGATED
         assert dimensional_response.preComputeStrategy == WebAnalyticsPreComputeStrategy.PRE_AGGREGATED
+        assert dimensional_response.preComputedAt is not None
+        assert dimensional_response.preComputeStale is None
         assert dimensional == v2, f"{_name} mismatch\nv2={v2}\ndimensional={dimensional}"
         assert self._counts(dimensional) == expected_counts
+        assert self._counts(self._run_live(WebStatsBreakdown.DEVICE_TYPE, properties)) == expected_counts
 
     @parameterized.expand(
         [
@@ -242,7 +261,9 @@ class TestWebDimensionalReadParity(WebAnalyticsPreAggregatedTestBase):
             ),
             modifiers=modifiers,
         )
-        assert ready_dimensional_job_ids(runner) is None, "partial coverage must not route to dimensional"
+        assert ready_dimensional_job_ids(runner, DIMENSIONAL_READ_TABLES) is None, (
+            "partial coverage must not route to dimensional"
+        )
 
         runner.calculate()
         assert runner.used_preaggregated_tables is expect_v2
@@ -288,6 +309,15 @@ class TestWebDimensionalReadParity(WebAnalyticsPreAggregatedTestBase):
                 {"Desktop": (2.0, 3.0), "Mobile": (1.0, 1.0)},
             ),
             (
+                "browser_version_filter",
+                DateRange(date_from=DATE_FROM, date_to=DATE_TO),
+                WebStatsBreakdown.DEVICE_TYPE,
+                [EventPropertyFilter(key="$browser_version", value="120", operator=PropertyOperator.EXACT)],
+                None,
+                None,
+                {"Desktop": (1.0, 2.0)},
+            ),
+            (
                 "range_before_retention_floor",
                 DateRange(date_from=DATE_FROM, date_to=DATE_TO),
                 WebStatsBreakdown.DEVICE_TYPE,
@@ -322,7 +352,7 @@ class TestWebDimensionalReadParity(WebAnalyticsPreAggregatedTestBase):
         with override_settings(EVENTS_DATA_RETENTION_ENFORCED=retention_months is not None):
             opted_in_runner, opted_in = run(OPT_IN)
             _live_runner, live = run(None)
-            assert ready_dimensional_job_ids(opted_in_runner) is None
+            assert ready_dimensional_job_ids(opted_in_runner, DIMENSIONAL_READ_TABLES) is None
 
         assert not opted_in_runner.used_preaggregated_tables
         assert opted_in == live
@@ -335,6 +365,41 @@ class TestWebDimensionalReadParity(WebAnalyticsPreAggregatedTestBase):
         ]
     )
     def test_failed_dimensional_read_falls_back_to_live(self, _name, builder_name):
+        self._assert_dimensional_failure(builder_name, RuntimeError("dimensional read failed"), falls_back=True)
+
+    @parameterized.expand(
+        [
+            ("stats_table_at_capacity", "DimensionalStatsTableQueryBuilder", ClickHouseAtCapacity(), LEGACY),
+            ("overview_at_capacity", "DimensionalWebOverviewQueryBuilder", ClickHouseAtCapacity(), LEGACY),
+            (
+                "overview_cancelled",
+                "DimensionalWebOverviewQueryBuilder",
+                CHQueryErrorQueryWasCancelled("cancelled", code=394, code_name="query_was_cancelled"),
+                LEGACY,
+            ),
+            ("stats_table_timeout_without_v2", "DimensionalStatsTableQueryBuilder", ClickHouseQueryTimeOut(), None),
+            ("overview_timeout_without_v2", "DimensionalWebOverviewQueryBuilder", ClickHouseQueryTimeOut(), None),
+        ]
+    )
+    def test_overload_and_cancel_errors_do_not_rerun_live(self, _name, builder_name, error, modifiers):
+        self._assert_dimensional_failure(builder_name, error, falls_back=False, modifiers=modifiers)
+
+    @parameterized.expand(
+        [
+            ("stats_table", "DimensionalStatsTableQueryBuilder"),
+            ("overview", "DimensionalWebOverviewQueryBuilder"),
+        ]
+    )
+    def test_timeout_falls_back_to_v2(self, _name, builder_name):
+        self._assert_dimensional_failure(builder_name, ClickHouseQueryTimeOut(), falls_back=True, modifiers=LEGACY)
+
+    def _assert_dimensional_failure(
+        self,
+        builder_name: str,
+        error: Exception,
+        falls_back: bool,
+        modifiers: HogQLQueryModifiers | None = None,
+    ) -> None:
         def run(web_query_modifiers):
             if builder_name == "DimensionalStatsTableQueryBuilder":
                 stats_runner = WebStatsTableQueryRunner(
@@ -346,6 +411,7 @@ class TestWebDimensionalReadParity(WebAnalyticsPreAggregatedTestBase):
                         limit=100,
                         webQueryModifiers=web_query_modifiers,
                     ),
+                    modifiers=modifiers,
                 )
                 return self._sort_results(stats_runner.calculate().results)
             overview_runner = WebOverviewQueryRunner(
@@ -355,18 +421,22 @@ class TestWebDimensionalReadParity(WebAnalyticsPreAggregatedTestBase):
                     properties=[],
                     webQueryModifiers=web_query_modifiers,
                 ),
+                modifiers=modifiers,
             )
             return [(item.key, item.value) for item in overview_runner.calculate().results]
 
         live = run(None)
         with patch(
             f"products.web_analytics.backend.hogql_queries.web_dimensional_read.{builder_name}.get_query",
-            side_effect=RuntimeError("dimensional read failed"),
+            side_effect=error,
         ) as failing_query:
-            opted_in = run(OPT_IN)
+            if falls_back:
+                assert run(OPT_IN) == live
+            else:
+                with self.assertRaises(type(error)):
+                    run(OPT_IN)
 
         assert failing_query.called
-        assert opted_in == live
 
     def test_overview_dimensional_matches_v2(self):
         def run(modifiers, web_query_modifiers):
@@ -392,6 +462,8 @@ class TestWebDimensionalReadParity(WebAnalyticsPreAggregatedTestBase):
         assert v2_query_types == ["web_overview_preaggregated_query"]
         assert dimensional_query_types == ["web_overview_dimensional_query"]
         assert dimensional.preComputeStrategy == WebAnalyticsPreComputeStrategy.PRE_AGGREGATED
+        assert dimensional.preComputedAt is not None
+        assert dimensional.preComputeStale is None
         assert [(item.key, item.value) for item in dimensional.results] == [
             (item.key, item.value) for item in v2.results
         ]
