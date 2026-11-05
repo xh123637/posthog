@@ -5,7 +5,7 @@ is what decides which destinations there are and which transport each one takes.
 """
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from functools import cache
@@ -18,7 +18,7 @@ from posthog.dataclasses import frozen
 from posthog.models import Team
 from posthog.utils import absolute_uri
 
-from products.alerts_platform.backend.delivery import delivery_paths, episode_paths, legacy_webhook
+from products.alerts_platform.backend.delivery import delivery_paths, episode_paths, legacy_webhook, recipients
 from products.alerts_platform.backend.delivery.destinations import list_alert_destination_groups
 from products.alerts_platform.backend.delivery.discord import DiscordTransport
 from products.alerts_platform.backend.delivery.dispatch import deliver
@@ -189,6 +189,17 @@ def deliver_evaluation(request: AlertDeliveryRequest) -> DeliveryOutcome:
     )
     if announced is None:
         return DeliveryOutcome(live=True, sent=0, skipped_without_transport=0)
+    if stale := delivery_holds.stale_held_triggers(request, announced.transitions):
+        logger.info(
+            "alerts_platform_delivery_stale_trigger_dropped",
+            configuration_id=request.configuration_id,
+            evaluation_key=request.evaluation_key,
+            groups=len(stale),
+        )
+        request = replace(
+            request,
+            incident_actions={key: action for key, action in request.incident_actions.items() if key not in stale},
+        )
     platform_destinations = _platform_destinations(request)
     native_announced, emissions = _split_by_path(request, announced, platform_destinations)
     emitter = delivery_paths.emitter_for(request.source) if emissions else None
@@ -391,14 +402,19 @@ def _split_by_path(
 
     A transition inside a firing takes the path its firing took first, so a firing and its resolve
     never split across paths. Any other transition takes the path its destinations allow now.
+
+    An alert whose destinations the platform keeps sends every transition to them natively. Its
+    stock destinations are `AlertDestination` rows, so any HogFunction listening on the alert is one
+    a person built, and the source also emits every transition for it. That includes a function
+    from a custom template or one with no `alert_id` filter, which no destination lookup lists, so
+    the source emits without asking who listens, as its own stack did. No destination is on both
+    paths, so nothing is sent twice. Moving an existing alert's destinations onto the platform must
+    therefore disable the HogFunctions it copies, or each of them hears every transition as well.
     """
-    # Destinations in `AlertDestination` have no HogFunction to emit for.
-    if (
-        not request.owned_by_platform
-        or platform_destinations is not None
-        or delivery_paths.emitter_for(request.source) is None
-    ):
+    if not request.owned_by_platform or delivery_paths.emitter_for(request.source) is None:
         return announced, ()
+    if platform_destinations is not None:
+        return announced, _emissions(request, announced.transitions)
 
     # Read once per delivery, because the chooser reads every destination of the alert.
     @cache
@@ -407,11 +423,11 @@ def _split_by_path(
             source=request.source,
             team_id=request.team_id,
             alert_id=request.destination_alert_id,
-            allowed_event_ids=[*request.event_ids_by_kind.values(), *request.event_ids_by_incident_action.values()],
+            allowed_event_ids=_all_event_ids(request),
         )
 
     native: list[AnnouncedTransition] = []
-    emissions: list[LegacyEventEmission] = []
+    emitted: list[AnnouncedTransition] = []
     for transition in announced.transitions:
         path = (
             episode_paths.episode_path(
@@ -424,9 +440,16 @@ def _split_by_path(
             if transition.episode_started_at is not None
             else choose()
         )
-        if path == DeliveryPath.NATIVE:
-            native.append(transition)
-            continue
+        (native if path == DeliveryPath.NATIVE else emitted).append(transition)
+    return replace(announced, transitions=tuple(native)), _emissions(request, emitted)
+
+
+def _emissions(
+    request: AlertDeliveryRequest, transitions: Sequence[AnnouncedTransition]
+) -> tuple[LegacyEventEmission, ...]:
+    """The events the source emits for its HogFunctions, one per transition a destination subscribes to."""
+    emissions: list[LegacyEventEmission] = []
+    for transition in transitions:
         subscribed = _subscribed_events(request, transition)
         if subscribed.message_event or subscribed.incident_event:
             emissions.append(
@@ -436,7 +459,12 @@ def _split_by_path(
                     incident_action=subscribed.incident_action if subscribed.incident_event else None,
                 )
             )
-    return replace(announced, transitions=tuple(native)), tuple(emissions)
+    return tuple(emissions)
+
+
+def _all_event_ids(request: AlertDeliveryRequest) -> list[str]:
+    """Every event the alert's HogFunctions can listen to: its message events and its incident events."""
+    return [*request.event_ids_by_kind.values(), *request.event_ids_by_incident_action.values()]
 
 
 def _overflow_notice_keys(
@@ -503,7 +531,7 @@ def _subscribed_events(request: AlertDeliveryRequest, transition: AnnouncedTrans
 
 @frozen
 class _SubscribedDestination:
-    # The HogFunction that subscribed this destination to the event, which its sends are recorded under.
+    # The HogFunction or `AlertDestination` row its sends are recorded under. None for a source's own recipients.
     id: str | None
     data: AlertDestinationData
     # Whether the destination hears the events the source emits for its HogFunctions.
@@ -515,6 +543,8 @@ class _PlatformDestinations:
     """An alert's enabled `AlertDestination` rows, with the kind each of its event ids announces."""
 
     destinations: tuple[StoredAlertDestination, ...]
+    # The addresses the source's own settings name, read once per delivery.
+    recipients: tuple[str, ...]
     kind_by_event_id: dict[str, AlertEventKind]
     incident_event_ids: frozenset[str]
 
@@ -541,6 +571,12 @@ def _platform_destinations(request: AlertDeliveryRequest) -> _PlatformDestinatio
         destinations=enabled_alert_destinations(
             team_id=request.team_id, configuration_id=UUID(request.configuration_id)
         ),
+        # Recipients read messages only, so a delivery that only moves an incident skips the lookup.
+        recipients=recipients.addresses(
+            request.source, team_id=request.team_id, configuration_id=UUID(request.configuration_id)
+        )
+        if request.sends_messages
+        else (),
         kind_by_event_id={
             **{event_id: AlertEventKind(kind) for kind, event_id in request.event_ids_by_kind.items()},
             **incident_kinds,
@@ -588,9 +624,14 @@ def _platform_subscribers(event_id: str, platform: _PlatformDestinations) -> lis
     if kind is None:
         return []
     incident = event_id in platform.incident_event_ids
-    return [
+    subscribers = [
         _SubscribedDestination(id=str(destination.id), data=destination.data, receives_emitted_events=False)
         for destination in platform.destinations
         if (destination.data["type"] in INCIDENT_DESTINATION_TYPES) == incident
-        and (incident or kind in destination.event_kinds)
+        and (incident or kind.delivered_as in destination.event_kinds)
     ]
+    # The source's recipients read messages. An incident edge is for an incident manager only.
+    if platform.recipients and not incident:
+        email: AlertDestinationData = {"type": DestinationType.EMAIL, "email_addresses": list(platform.recipients)}
+        subscribers.append(_SubscribedDestination(id=None, data=email, receives_emitted_events=False))
+    return subscribers
