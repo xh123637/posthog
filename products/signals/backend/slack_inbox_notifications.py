@@ -73,6 +73,7 @@ logger = logging.getLogger(__name__)
 
 _SUMMARY_EXCERPT_MAX_LEN = 280
 _SLACK_HEADER_MAX_LEN = 150
+_SLACK_CONTEXT_MAX_LEN = 3000
 _INBOX_INVITE_UTM_TAGS = "utm_source=posthog&utm_campaign=signals_inbox&utm_medium=slack"
 # Bound message size / avoid pinging a crowd.
 _MAX_REVIEWER_MENTIONS = 5
@@ -340,6 +341,23 @@ def _display_title(title: str | None) -> str:
     return description or title
 
 
+def _owner_context_text(reviewer_labels: list[str]) -> str:
+    owner_label = "Suggested owner" if len(reviewer_labels) == 1 else "Suggested owners"
+    prefix = f"👤 {owner_label}:"
+    text = f"{prefix} {' '.join(reviewer_labels)}"
+    if len(text) <= _SLACK_CONTEXT_MAX_LEN:
+        return text
+
+    text = prefix
+    for index, label in enumerate(reviewer_labels):
+        remaining = len(reviewer_labels) - index - 1
+        suffix = f" (+{remaining} more)" if remaining else ""
+        if len(text) + 1 + len(label) + len(suffix) > _SLACK_CONTEXT_MAX_LEN:
+            return f"{text} (+{remaining + 1} more)"
+        text += f" {label}"
+    return text
+
+
 def _build_message_blocks(report: SignalReport, *, reviewer_labels: list[str]) -> tuple[list[dict], str]:
     title_line = _display_title(report.title)
     header_text = (
@@ -366,11 +384,10 @@ def _build_message_blocks(report: SignalReport, *, reviewer_labels: list[str]) -
     ]
 
     if reviewer_labels:
-        owner_label = "Suggested owner" if len(reviewer_labels) == 1 else "Suggested owners"
         blocks.append(
             {
                 "type": "context",
-                "elements": [{"type": "mrkdwn", "text": f"👤 {owner_label}: {' '.join(reviewer_labels)}"}],
+                "elements": [{"type": "mrkdwn", "text": _owner_context_text(reviewer_labels)}],
             }
         )
 

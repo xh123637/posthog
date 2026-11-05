@@ -154,12 +154,28 @@ def test_build_message_blocks_shows_only_the_impact_section(summary: str, expect
         assert "Impact" not in body
 
 
-def test_build_message_blocks_mentions_every_routed_reviewer() -> None:
+@pytest.mark.parametrize(
+    ("reviewer_labels", "expected"),
+    [
+        (["<@U1>", "<@U2>"], "👤 Suggested owners: <@U1> <@U2>"),
+        (["a" * 2981], "👤 Suggested owner: " + "a" * 2981),
+        (["a" * 2982], "👤 Suggested owner: (+1 more)"),
+        (
+            ["<@U1>"] + ["Owner" * 200] * 100,
+            "👤 Suggested owners: <@U1> " + "Owner" * 200 + " " + "Owner" * 200 + " (+98 more)",
+        ),
+        (["a" * 2966, "<@U1234567890>"], "👤 Suggested owners: " + "a" * 2966 + " (+1 more)"),
+        (["<@U1>", "&amp;" * 595], "👤 Suggested owners: <@U1> (+1 more)"),
+    ],
+    ids=["mentions", "at_limit", "long_name", "many_names", "whole_mention", "escaped_name"],
+)
+def test_build_message_blocks_bounds_owner_labels(reviewer_labels: list[str], expected: str) -> None:
     report = SignalReport(id="report-uuid", title="Shared channel")
-    blocks, _ = _build_message_blocks(report, reviewer_labels=["<@U1>", "<@U2>"])
+    blocks, _ = _build_message_blocks(report, reviewer_labels=reviewer_labels)
 
     assert blocks[1]["text"] == "**Shared channel**"
-    assert blocks[2]["elements"][0]["text"] == "👤 Suggested owners: <@U1> <@U2>"
+    assert blocks[2]["elements"][0]["text"] == expected
+    assert len(blocks[2]["elements"][0]["text"]) <= 3000
 
 
 def test_build_message_blocks_escapes_mrkdwn_in_llm_derived_fields() -> None:
