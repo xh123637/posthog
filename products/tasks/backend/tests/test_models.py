@@ -794,6 +794,7 @@ class TestTask(TestCase):
                 title="Repo-less task",
                 description="No repository",
                 profile=profile,
+                source=FLOW_SOURCE if profile.source_kind == SourceKind.HOG_FLOW else None,
                 user_id=user.id,
             )
 
