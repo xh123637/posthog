@@ -3,6 +3,7 @@ mod integration_utils;
 
 use async_trait::async_trait;
 use axum_test_helper::TestClient;
+use capture::ai_event_limits::AI_MAX_EVENT_BYTES_CEILING;
 use capture::api::CaptureError;
 use capture::config::CaptureMode;
 use capture::event_restrictions::{
@@ -946,6 +947,30 @@ async fn oversized_spans_are_shed_and_warn_while_the_export_succeeds() {
         emitted[0].extra_details.get("droppedSpans"),
         Some(&json!(1))
     );
+}
+
+#[tokio::test]
+async fn a_span_tens_of_megabytes_large_is_accepted() {
+    let sink = CapturingSink::new();
+    let client = make_test_client_with_options(
+        &sink,
+        TestClientOptions {
+            ai_max_event_bytes: Some(AI_MAX_EVENT_BYTES_CEILING),
+            ..Default::default()
+        },
+    );
+    let mut request = make_single_span_request();
+    request.resource_spans[0].scope_spans[0].spans[0]
+        .attributes
+        .push(make_kv(
+            "gen_ai.prompt",
+            any_value::Value::StringValue("x".repeat(20_000_000)),
+        ));
+
+    let status = send_request_with_client(&client, &request).await;
+
+    assert_eq!(status, 200);
+    assert_eq!(sink.get_events().await.len(), 1);
 }
 
 /// A token granted a larger cap keeps the span the deployment default would

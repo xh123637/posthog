@@ -27,13 +27,13 @@ use crate::ingestion_warnings::otel::{
     emit_span_too_big_warning, SpanCapStage,
 };
 use crate::prometheus::{report_dropped_events, report_internal_error_metrics};
-use crate::router::State as AppState;
+use crate::router::{State as AppState, AI_BODY_SIZE};
 use crate::token::validate_token;
 use crate::v0_request::{exceeds_max_ai_event_bytes, resolve_ai_max_event_bytes};
 
 use self::attribution::otel_request_context;
 
-pub const OTEL_BODY_SIZE: usize = 4 * 1024 * 1024; // 4MB
+pub const OTEL_BODY_SIZE: usize = AI_BODY_SIZE;
 
 /// Route this handler serves. Stamped onto warnings so a reader of the v2 table
 /// can tell which endpoint produced them.

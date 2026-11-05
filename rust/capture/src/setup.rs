@@ -27,7 +27,7 @@ use crate::quota_limiters::{
     is_exception_event, is_llm_event, is_survey_event, CaptureQuotaLimiter,
 };
 use crate::router;
-use crate::router::BATCH_BODY_SIZE;
+use crate::router::{AI_BODY_SIZE, BATCH_BODY_SIZE};
 use crate::sinks::kafka::KafkaSink;
 use crate::sinks::noop::NoOpSink;
 use crate::sinks::print::PrintSink;
@@ -221,6 +221,8 @@ pub async fn build_components(
         CaptureMode::Events | CaptureMode::Ai | CaptureMode::Import => BATCH_BODY_SIZE * 5,
         CaptureMode::Recordings => ingestion_message_max_bytes as usize,
     };
+    let (capture_v1_max_compressed_body_bytes, capture_v1_max_decompressed_body_bytes) =
+        capture_v1_body_limits(&config);
 
     // Build the overflow limiters here (not inside the sink) so routing
     // policy lives in `router::State` alongside every other pipeline-level
@@ -373,8 +375,8 @@ pub async fn build_components(
         config.ai_max_event_bytes,
         config.body_chunk_read_timeout_ms,
         config.body_read_chunk_size_kb,
-        config.capture_v1_max_compressed_body_bytes,
-        config.capture_v1_max_decompressed_body_bytes,
+        capture_v1_max_compressed_body_bytes,
+        capture_v1_max_decompressed_body_bytes,
         overflow_limiter,
         ai_events_overflow_limiter,
         ai_byte_rate_limiter,
@@ -439,6 +441,24 @@ fn ai_max_event_bytes_ceiling(producer_message_max_bytes: u32) -> u64 {
     (producer_message_max_bytes as u64)
         .saturating_sub(ENVELOPE_WEIGHT_BYTES as u64)
         .min(AI_MAX_EVENT_BYTES_CEILING)
+}
+
+const _: () = assert!(
+    BATCH_BODY_SIZE * 5 >= AI_BODY_SIZE,
+    "the AI batch route decompresses into the analytics budget"
+);
+
+/// `/i/v1/ai/events` shares these knobs with v1 analytics, so only capture-ai
+/// raises them to the AI body size.
+fn capture_v1_body_limits(config: &Config) -> (usize, usize) {
+    let compressed = config.capture_v1_max_compressed_body_bytes;
+    let decompressed = config.capture_v1_max_decompressed_body_bytes;
+    match config.capture_mode {
+        CaptureMode::Ai => (compressed.max(AI_BODY_SIZE), decompressed.max(AI_BODY_SIZE)),
+        CaptureMode::Events | CaptureMode::Import | CaptureMode::Recordings => {
+            (compressed, decompressed)
+        }
+    }
 }
 
 fn warn_if_ai_ceiling_exceeds_producer_cap(config: &Config, producer_message_max_bytes: u32) {
@@ -1219,6 +1239,46 @@ mod tests {
             ai_ceiling_exceeds_producer_cap(&config, producer_cap),
             expected
         );
+    }
+
+    #[rstest]
+    #[case::ai_lifts_both_to_the_ai_body_size(
+        "ai",
+        20_971_520,
+        52_428_800,
+        (AI_BODY_SIZE, AI_BODY_SIZE)
+    )]
+    #[case::ai_keeps_a_larger_configured_value(
+        "ai",
+        20_971_520,
+        104_857_600,
+        (AI_BODY_SIZE, 104_857_600)
+    )]
+    #[case::analytics_keeps_its_configured_values(
+        "events",
+        10_485_760,
+        52_428_800,
+        (10_485_760, 52_428_800)
+    )]
+    fn v1_body_limits_carry_a_ceiling_sized_event_only_on_capture_ai(
+        #[case] mode: &str,
+        #[case] compressed: usize,
+        #[case] decompressed: usize,
+        #[case] expected: (usize, usize),
+    ) {
+        let cfg_env: HashMap<String, String> = [
+            ("REDIS_URL", "redis://localhost:6379/"),
+            ("CAPTURE_MODE", mode),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let mut config: Config =
+            envconfig::Envconfig::init_from_hashmap(&cfg_env).expect("test config");
+        config.capture_v1_max_compressed_body_bytes = compressed;
+        config.capture_v1_max_decompressed_body_bytes = decompressed;
+
+        assert_eq!(capture_v1_body_limits(&config), expected);
     }
 
     #[rstest]
