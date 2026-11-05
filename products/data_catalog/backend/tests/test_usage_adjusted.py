@@ -59,12 +59,16 @@ class TestAdjustedRunDetection(SimpleTestCase):
             ("described_after_the_query", [_call("metric-describe", "signups", minutes=1)], FetchOutcome.SILENT),
             ("listed_only", [_call("metric-list")], FetchOutcome.MISSED),
             ("described_another_metric", [_call("metric-describe", "revenue")], FetchOutcome.MISSED),
+            ("searched_table_descriptions", [_call("execute-sql")], FetchOutcome.MISSED),
             ("other_session", [_call("metric-describe", "signups", trace="t2")], FetchOutcome.SILENT),
             ("no_catalog_call", [], FetchOutcome.SILENT),
         ]
     )
     def test_attribute_fetch(self, _name: str, calls: list[CatalogCall], outcome: FetchOutcome) -> None:
         assert attribute_fetch(_query(), "signups", calls) == outcome
+
+    def test_a_query_older_than_the_metric_is_no_candidate(self) -> None:
+        assert build_candidate_groups([_query(at=AT - timedelta(days=1))], _index()) == []
 
     def test_repeated_sql_is_judged_once_and_scout_only_groups_go_last(self) -> None:
         sliced = "SELECT count() FROM events WHERE event = 'signup' AND properties.plan = 'pro'"
@@ -150,6 +154,20 @@ class TestAgentTelemetryQueries(ClickhouseTestMixin, BaseTest):
             at - timedelta(minutes=1),
             **{"$ai_input_state": json.dumps({"name": "signups"})},
         )
+        self._telemetry(
+            "$ai_span",
+            "execute-sql",
+            "t1",
+            at - timedelta(minutes=2),
+            **{"$ai_input_state": json.dumps({"query": "SELECT table_name, description FROM tables"})},
+        )
+        self._telemetry(
+            "$ai_span",
+            "execute-sql",
+            "t1",
+            at - timedelta(minutes=3),
+            **{"$ai_input_state": json.dumps({"query": "SELECT column_name, data_type FROM columns"})},
+        )
         flush_persons_and_events()
 
         queries = fetch_agent_queries(
@@ -162,4 +180,7 @@ class TestAgentTelemetryQueries(ClickhouseTestMixin, BaseTest):
         assert [(query.trace_id, query.intent, query.sql, query.is_scout) for query in queries] == [
             ("t1", "weekly signups", SIGNUPS, True)
         ]
-        assert [(call.tool, call.metric_name) for call in calls["t1"]] == [("metric-describe", "signups")]
+        assert sorted((call.tool, call.metric_name) for call in calls["t1"]) == [
+            ("execute-sql", ""),
+            ("metric-describe", "signups"),
+        ]
