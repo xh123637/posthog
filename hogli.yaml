@@ -1,6 +1,10 @@
 config:
     description: Unified developer experience for the PostHog monorepo.
     commands_dir: tools/hogli-commands/hogli_commands
+    # In-repo packages the commands import. Loaded from this checkout, not from the
+    # venv's editable install, which points at the main checkout in a worktree.
+    package_dirs:
+        - packages/owners-yaml
     # Imported once at startup to register precheck handlers, telemetry property
     # hooks, and post-command hooks. Keep these modules cheap to import — heavy
     # dependencies must live behind lazy imports inside handler bodies.

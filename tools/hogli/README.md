@@ -164,6 +164,8 @@ def db_migrate(dry_run: bool) -> None:
 
 `commands_dir` is optional and explicit: hogli only uses it when configured. It must be a relative path to an existing directory. hogli puts that directory's parent on `sys.path`, so the directory should be an importable package or module tree. It must not be named `hogli`, since that shadows the installed framework.
 
+`package_dirs` lists in-repo packages the commands import, as relative paths to existing directories. hogli puts them at the front of `sys.path`, so the checkout's copy wins over an editable install that points at another checkout, as a venv shared across git worktrees does.
+
 ### Full: project package with submodules
 
 For a larger command surface, keep the distribution/project directory separate from the import package:

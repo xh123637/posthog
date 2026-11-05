@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 import pytest
 from unittest.mock import MagicMock, patch
@@ -11,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import click
 from click.testing import CliRunner
 from hogli.cli import cli
+from hogli.lazy_commands import add_package_dirs_to_path
 from hogli.manifest import get_manifest
 
 runner = CliRunner()
@@ -144,6 +146,15 @@ class TestLazyClickCommands:
         with click.Context(cli) as ctx:
             assert hidden_command not in cli.list_commands(ctx)
             assert isinstance(cli.get_command(ctx, hidden_command), click.Command)
+
+
+class TestPackageDirsOnPath:
+    def test_package_dirs_go_ahead_of_installed_packages(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(sys, "path", ["/site-packages", str(tmp_path / "b")])
+
+        add_package_dirs_to_path([tmp_path / "a", tmp_path / "b"])
+
+        assert sys.path == [str(tmp_path / "a"), str(tmp_path / "b"), "/site-packages"]
 
 
 class TestHelpText:

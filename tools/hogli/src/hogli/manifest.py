@@ -155,6 +155,21 @@ class Manifest:
         return path
 
     @property
+    def package_dirs(self) -> list[Path]:
+        """Directories of in-repo packages that commands import, put on ``sys.path`` ahead of
+        installed copies. A venv shared across worktrees installs them editable from one
+        checkout, so without this a command imports a package from another checkout than its own.
+        """
+        configured = self.config.get("package_dirs", [])
+        if not isinstance(configured, list) or not all(isinstance(entry, str) and entry for entry in configured):
+            raise ValueError("config.package_dirs must be a list of non-empty relative paths")
+        paths = [self._resolve_repo_relative_path("config.package_dirs", entry) for entry in configured]
+        for entry, path in zip(configured, paths):
+            if not path.is_dir():
+                raise ValueError(f"config.package_dirs '{entry}' must resolve to a directory")
+        return paths
+
+    @property
     def scripts_dir(self) -> Path:
         """Get scripts directory path for bin_script commands.
 

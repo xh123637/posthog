@@ -23,7 +23,12 @@ import click
 from hogli import telemetry
 from hogli.command_types import BinScriptCommand, CompositeCommand, DirectCommand, HogliCommand
 from hogli.hooks import post_command_hooks, telemetry_property_hooks
-from hogli.lazy_commands import add_commands_dir_to_path, add_repo_root_to_path, resolve_click_command
+from hogli.lazy_commands import (
+    add_commands_dir_to_path,
+    add_package_dirs_to_path,
+    add_repo_root_to_path,
+    resolve_click_command,
+)
 from hogli.manifest import (
     REPO_ROOT,
     Manifest,
@@ -584,6 +589,7 @@ def _load_boot_modules() -> None:
     """
     manifest = get_manifest()
     add_repo_root_to_path(REPO_ROOT)
+    add_package_dirs_to_path(manifest.package_dirs)
     add_commands_dir_to_path(manifest.commands_dir)
 
     for module_path in manifest.config.get("boot_modules", []):

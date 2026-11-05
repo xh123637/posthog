@@ -24,6 +24,15 @@ def add_repo_root_to_path(repo_root: Path) -> None:
         sys.path.append(repo_root_str)
 
 
+def add_package_dirs_to_path(package_dirs: list[Path]) -> None:
+    """Prepended, so this checkout's copy of a package wins over an installed one."""
+    for package_dir in reversed(package_dirs):
+        package_dir_str = str(package_dir)
+        if package_dir_str in sys.path:
+            sys.path.remove(package_dir_str)
+        sys.path.insert(0, package_dir_str)
+
+
 def add_commands_dir_to_path(commands_dir: Path | None) -> None:
     """Make a configured local commands package importable.
 

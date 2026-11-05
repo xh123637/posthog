@@ -230,6 +230,24 @@ class TestCommandsDir:
             manifest = Manifest()
             assert manifest.commands_dir == commands_dir.resolve()
 
+    def test_package_dirs_resolve_and_must_exist(self, tmp_path: Path) -> None:
+        (tmp_path / "packages" / "lib").mkdir(parents=True)
+
+        with (
+            patch.object(Manifest, "_load", return_value={"config": {"package_dirs": ["packages/lib"]}}),
+            patch("hogli.manifest.REPO_ROOT", tmp_path),
+            patch("hogli.manifest.MANIFEST_FILE", tmp_path / "hogli.yaml"),
+        ):
+            assert Manifest().package_dirs == [(tmp_path / "packages" / "lib").resolve()]
+
+        with (
+            patch.object(Manifest, "_load", return_value={"config": {"package_dirs": ["packages/missing"]}}),
+            patch("hogli.manifest.REPO_ROOT", tmp_path),
+            patch("hogli.manifest.MANIFEST_FILE", tmp_path / "hogli.yaml"),
+            pytest.raises(ValueError, match="packages/missing"),
+        ):
+            _ = Manifest().package_dirs
+
     def test_commands_dir_rejects_missing_configured_path(self, tmp_path: Path) -> None:
         with (
             patch.object(
